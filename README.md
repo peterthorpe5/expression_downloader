@@ -52,38 +52,46 @@ analysis/expression_atlas/
   e3_expression.duckdb
 ```
 
-## 1. Install dependencies
+## 1. Install dependencies with conda/mamba
 
-From inside the unpacked package directory:
+The recommended cluster setup is to install the R dependencies with conda/mamba rather than using `install.packages()` inside R. `r-duckplyr`, `r-readr` and `r-duckdb` are available from conda-forge, and `ExpressionAtlas` is available from Bioconda as `bioconductor-expressionatlas`.
+
+Install into your existing environment:
 
 ```bash
-Rscript inst/scripts/00_install_dependencies.R
+conda activate Go_analysis2
+
+# mamba is faster, but conda install is also fine if mamba is unavailable.
+mamba install -c conda-forge -c bioconda \
+  r-dplyr \
+  r-duckplyr \
+  r-duckdb \
+  r-fs \
+  r-httr2 \
+  r-purrr \
+  r-readr \
+  r-rlang \
+  r-stringr \
+  r-tibble \
+  r-tidyr \
+  r-testthat \
+  bioconductor-expressionatlas
 ```
 
-This installs CRAN dependencies and attempts to install the optional Bioconductor package `ExpressionAtlas`.
+Or create a clean environment:
 
-If you do not want to use the automatic dependency script, install these manually:
-
-```r
-install.packages(
-  pkgs = c(
-    "dplyr",
-    "duckplyr",
-    "fs",
-    "httr2",
-    "purrr",
-    "readr",
-    "rlang",
-    "stringr",
-    "tibble",
-    "tidyr",
-    "testthat"
-  )
-)
-
-install.packages(pkgs = "BiocManager")
-BiocManager::install(pkgs = "ExpressionAtlas")
+```bash
+mamba env create -f envs/e3_atlas_duckplyr.yml
+conda activate e3_atlas_duckplyr
 ```
+
+Then check the R dependencies:
+
+```bash
+Rscript inst/scripts/00_check_dependencies.R
+```
+
+The old `inst/scripts/00_install_dependencies.R` script is still present, but conda/mamba is preferred for the cluster. That script now sets `https://cloud.r-project.org` explicitly if it is used, avoiding the CRAN mirror error.
 
 ## 2. Run the unit tests
 

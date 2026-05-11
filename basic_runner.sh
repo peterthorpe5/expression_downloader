@@ -2,6 +2,10 @@
 set -euo pipefail
 
 
+# conda activate Go_analysis2
+
+cd ~/data/2026_E3_protac/expression_downloader
+
 Rscript inst/scripts/00_install_dependencies.R
 
 R CMD INSTALL .

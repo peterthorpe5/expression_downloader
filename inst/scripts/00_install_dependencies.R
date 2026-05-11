@@ -1,5 +1,16 @@
 #!/usr/bin/env Rscript
 
+# This script is retained for convenience, but conda/mamba installation is the
+# recommended route on the cluster. It sets a CRAN mirror explicitly to avoid
+# the common "trying to use CRAN without setting a mirror" error.
+#
+# Preferred cluster setup:
+#   mamba install -c conda-forge -c bioconda r-dplyr r-duckplyr r-duckdb \
+#     r-fs r-httr2 r-purrr r-readr r-rlang r-stringr r-tibble r-tidyr \
+#     r-testthat bioconductor-expressionatlas
+
+options(repos = c(CRAN = "https://cloud.r-project.org"))
+
 cran_packages <- c(
   "dplyr",
   "duckplyr",
@@ -22,16 +33,18 @@ missing_cran_packages <- cran_packages[!vapply(
 )]
 
 if (length(missing_cran_packages) > 0L) {
+  message("Installing missing CRAN packages from https://cloud.r-project.org")
   install.packages(pkgs = missing_cran_packages)
 }
 
-if (!requireNamespace(package = "BiocManager", quietly = TRUE)) {
-  install.packages(pkgs = "BiocManager")
-}
-
 if (!requireNamespace(package = "ExpressionAtlas", quietly = TRUE)) {
-  message("Installing optional Bioconductor package ExpressionAtlas.")
-  BiocManager::install(pkgs = "ExpressionAtlas", ask = FALSE, update = FALSE)
+  message(
+    paste(
+      "ExpressionAtlas is not installed.",
+      "On the cluster, prefer conda/bioconda:",
+      "mamba install -c conda-forge -c bioconda bioconductor-expressionatlas"
+    )
+  )
 }
 
-message("Dependency installation step finished.")
+message("Dependency installation/check step finished.")
