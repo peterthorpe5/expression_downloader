@@ -20,7 +20,8 @@ No comma-separated output files are produced. Manifests are TSV and large querya
 ```text
 e3_atlas_duckplyr/
   R/                              Package functions
-  inst/scripts/                   Runnable scripts
+  inst/scripts/                   Runnable R and shell scripts
+  inst/python/                    Optional Python download helper
   data/species.txt                Editable species list
   data/species_overrides.tsv      Optional species name/query corrections
   data/manual_experiments_template.tsv
@@ -194,7 +195,51 @@ Rscript inst/scripts/run_all.R \
   --create_duckdb=true
 ```
 
-## 6. Run step-by-step instead of all at once
+## 6. Optional Python download step
+
+The R pipeline now has the duplicate-URL manifest bug fixed, so `run_all.R` should work. However, the remote file checking and download part can also be done in Python, which is often easier to debug on a cluster. This keeps the downstream import and Shiny/duckplyr work in R, but uses Python for HTTP checks, retries and downloads. The Python helper uses only the Python standard library.
+
+Run discovery and build the FTP manifest in R:
+
+```bash
+Rscript inst/scripts/01_build_species_registry.R \
+  --species_file=data/species.txt \
+  --override_tsv=data/species_overrides.tsv \
+  --output_tsv=../analysis/expression_atlas/manifests/species_registry.tsv
+
+Rscript inst/scripts/02_search_atlas_experiments.R \
+  --species_registry_tsv=../analysis/expression_atlas/manifests/species_registry.tsv \
+  --output_tsv=../analysis/expression_atlas/manifests/atlas_candidate_experiments.tsv
+
+Rscript inst/scripts/03a_build_ftp_manifest.R \
+  --experiment_manifest_tsv=../analysis/expression_atlas/manifests/atlas_candidate_experiments.tsv \
+  --output_dir=../analysis/expression_atlas
+```
+
+Then check/download the files with Python:
+
+```bash
+./inst/scripts/03b_download_atlas_files_python.sh \
+  --output_dir=../analysis/expression_atlas \
+  --force_download=false \
+  --timeout_seconds=30 \
+  --retries=2
+```
+
+Then return to R for Parquet/DuckDB/duckplyr import:
+
+```bash
+Rscript inst/scripts/04_import_expression_to_parquet.R \
+  --downloaded_files_tsv=../analysis/expression_atlas/manifests/atlas_downloaded_files.tsv \
+  --output_dir=../analysis/expression_atlas \
+  --force_import=false
+
+Rscript inst/scripts/06_create_duckdb_views.R \
+  --output_dir=../analysis/expression_atlas \
+  --duckdb_path=../analysis/expression_atlas/e3_expression.duckdb
+```
+
+## 7. Run step-by-step instead of all at once
 
 ```bash
 Rscript inst/scripts/01_build_species_registry.R \
@@ -221,7 +266,7 @@ Rscript inst/scripts/06_create_duckdb_views.R \
   --duckdb_path=analysis/expression_atlas/e3_expression.duckdb
 ```
 
-## 7. Identifier aliases
+## 8. Identifier aliases
 
 Once you have either an exported `e3_ligases.tsv` or the inherited SQLite database, build an alias table.
 
@@ -352,3 +397,8 @@ output$expression_table <- DT::renderDataTable({
 - Identifier mapping will need additional curation because E3 accessions, UniProt IDs, Ensembl/Ensembl Plants IDs, gene symbols and Atlas gene IDs may differ.
 - The package starts by preserving observed aliases from the inherited E3 table. A later layer can add UniProt, Ensembl Plants BioMart or other mappings.
 - Large matrices are not read into R memory during Parquet import; DuckDB SQL handles the wide-to-long conversion.
+
+
+## Version 0.1.3 note
+
+This version fixes a manifest-checking failure caused by a duplicate `url` column when unnesting remote-status results. It also adds an optional Python downloader for the remote-check/download stage.

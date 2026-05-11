@@ -144,7 +144,13 @@ check_remote_file <- function(url, timeout_seconds = 30L) {
 check_manifest_remotes <- function(manifest_tbl) {
   checked_tbl <- manifest_tbl |>
     dplyr::mutate(
-      remote_status = purrr::map(.x = .data$url, .f = check_remote_file)
+      remote_status = purrr::map(
+        .x = .data$url,
+        .f = function(url) {
+          check_remote_file(url = url) |>
+            dplyr::select(-.data$url)
+        }
+      )
     ) |>
     tidyr::unnest(cols = "remote_status")
 

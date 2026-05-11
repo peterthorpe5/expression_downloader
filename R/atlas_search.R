@@ -147,6 +147,16 @@ search_atlas_from_species_registry <- function(species_registry_tbl) {
       species_column = included_species_tbl$species_column
     ),
     .f = function(atlas_species_query, species_column) {
+      message(
+        stringr::str_c(
+          "Searching Expression Atlas for ",
+          species_column,
+          " using query '",
+          atlas_species_query,
+          "'"
+        )
+      )
+
       search_atlas_species(
         atlas_species_query = atlas_species_query,
         species_column = species_column

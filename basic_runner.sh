@@ -13,7 +13,7 @@ R CMD INSTALL .
 Rscript inst/scripts/run_all.R \
   --species_file=data/species.txt \
   --override_tsv=data/species_overrides.tsv \
-  --output_dir=analysis/expression_atlas \
+  --output_dir=../analysis/expression_atlas \
   --force_download=false \
   --force_import=false \
   --create_duckdb=true
