@@ -13,6 +13,17 @@ force_download <- as_cli_logical(
   value = get_cli_arg(parsed_args = args, name = "force_download", default = "false"),
   default = FALSE
 )
+require_expression_matrix <- as_cli_logical(
+  value = get_cli_arg(parsed_args = args, name = "require_expression_matrix", default = "true"),
+  default = TRUE
+)
+expression_file_types <- parse_expression_file_types(
+  expression_file_types = get_cli_arg(
+    parsed_args = args,
+    name = "expression_file_types",
+    default = "tpms,fpkms"
+  )
+)
 
 manifest_dir <- file.path(output_dir, "manifests")
 download_dir <- file.path(output_dir, "downloads")
@@ -52,14 +63,35 @@ checked_manifest_tbl <- check_manifest_remotes(manifest_tbl = ftp_manifest_tbl)
 checked_manifest_tsv <- file.path(manifest_dir, "atlas_checked_file_manifest.tsv")
 readr::write_tsv(x = checked_manifest_tbl, file = checked_manifest_tsv)
 
-download_log_tbl <- download_checked_manifest(
+expression_availability_tbl <- summary_expression_matrix_availability(
   checked_manifest_tbl = checked_manifest_tbl,
+  expression_file_types = expression_file_types
+)
+expression_availability_tsv <- file.path(
+  manifest_dir,
+  "atlas_expression_matrix_availability.tsv"
+)
+readr::write_tsv(x = expression_availability_tbl, file = expression_availability_tsv)
+
+selected_checked_manifest_tbl <- filter_checked_manifest_to_expression_experiments(
+  checked_manifest_tbl = checked_manifest_tbl,
+  expression_file_types = expression_file_types,
+  require_expression_matrix = require_expression_matrix
+)
+selected_checked_manifest_tsv <- file.path(
+  manifest_dir,
+  "atlas_selected_checked_file_manifest.tsv"
+)
+readr::write_tsv(x = selected_checked_manifest_tbl, file = selected_checked_manifest_tsv)
+
+download_log_tbl <- download_checked_manifest(
+  checked_manifest_tbl = selected_checked_manifest_tbl,
   force = force_download
 )
 download_log_tsv <- file.path(manifest_dir, "atlas_download_log.tsv")
 readr::write_tsv(x = download_log_tbl, file = download_log_tsv)
 
-downloaded_files_tbl <- checked_manifest_tbl |>
+downloaded_files_tbl <- selected_checked_manifest_tbl |>
   dplyr::left_join(y = download_log_tbl, by = c("url", "local_path")) |>
   dplyr::filter(.data$success) |>
   dplyr::select(
@@ -78,5 +110,7 @@ readr::write_tsv(x = downloaded_files_tbl, file = downloaded_files_tsv)
 
 message("Wrote FTP manifest: ", ftp_manifest_tsv)
 message("Wrote checked manifest: ", checked_manifest_tsv)
+message("Wrote expression matrix availability: ", expression_availability_tsv)
+message("Wrote selected checked manifest: ", selected_checked_manifest_tsv)
 message("Wrote download log: ", download_log_tsv)
 message("Wrote downloaded files manifest: ", downloaded_files_tsv)

@@ -311,3 +311,136 @@ download_checked_manifest <- function(checked_manifest_tbl, force = FALSE) {
 
   return(download_log_tbl)
 }
+
+#' Parse a comma-separated list of expression file types.
+#'
+#' Converts command-line friendly values such as `"tpms,fpkms"` into a clean
+#' character vector. Empty values fall back to TPM and FPKM files.
+#'
+#' @param expression_file_types Character vector or comma-separated string.
+#' @return Character vector of Expression Atlas file types.
+parse_expression_file_types <- function(expression_file_types = c("tpms", "fpkms")) {
+  if (is.null(expression_file_types) || length(expression_file_types) == 0L) {
+    return(c("tpms", "fpkms"))
+  }
+
+  parsed_types <- stringr::str_split(
+    string = as.character(expression_file_types),
+    pattern = ","
+  ) |>
+    unlist(use.names = FALSE) |>
+    stringr::str_trim() |>
+    stringr::str_to_lower()
+
+  parsed_types <- parsed_types[parsed_types != ""]
+
+  if (length(parsed_types) == 0L) {
+    return(c("tpms", "fpkms"))
+  }
+
+  return(unique(parsed_types))
+}
+
+
+#' Filter a checked manifest to experiments with expression matrices.
+#'
+#' Expression Atlas searches can return many microarray or metadata-only
+#' experiments. For this project we usually want baseline RNA-seq-style
+#' experiments with downloadable normalised expression matrices, such as TPM or
+#' FPKM files. This function identifies experiments where at least one requested
+#' expression matrix exists remotely, then keeps all available rows for those
+#' experiments so the matching SDRF and methods files can still be downloaded.
+#'
+#' @param checked_manifest_tbl Manifest after remote checking.
+#' @param expression_file_types File types that count as expression matrices.
+#' @param require_expression_matrix Logical value. If FALSE, the manifest is
+#'   returned unchanged.
+#' @return Filtered checked manifest.
+filter_checked_manifest_to_expression_experiments <- function(
+  checked_manifest_tbl,
+  expression_file_types = c("tpms", "fpkms"),
+  require_expression_matrix = TRUE
+) {
+  if (!require_expression_matrix) {
+    return(checked_manifest_tbl)
+  }
+
+  expression_file_types <- parse_expression_file_types(
+    expression_file_types = expression_file_types
+  )
+
+  if (nrow(checked_manifest_tbl) == 0L) {
+    return(checked_manifest_tbl)
+  }
+
+  selected_experiments_tbl <- checked_manifest_tbl |>
+    dplyr::filter(.data$file_type %in% expression_file_types) |>
+    dplyr::filter(.data$remote_exists) |>
+    dplyr::filter(.data$remote_non_empty) |>
+    dplyr::distinct(
+      .data$species_column,
+      .data$experiment_accession
+    ) |>
+    dplyr::mutate(has_expression_matrix = TRUE)
+
+  if (nrow(selected_experiments_tbl) == 0L) {
+    return(
+      checked_manifest_tbl |>
+        dplyr::slice(0L) |>
+        dplyr::mutate(has_expression_matrix = logical())
+    )
+  }
+
+  filtered_manifest_tbl <- checked_manifest_tbl |>
+    dplyr::inner_join(
+      y = selected_experiments_tbl,
+      by = c("species_column", "experiment_accession")
+    )
+
+  return(filtered_manifest_tbl)
+}
+
+
+#' Summarise expression-matrix availability by species and experiment.
+#'
+#' Creates a compact manifest that is useful for checking which candidate
+#' experiments passed the RNA-seq/normalised-expression filter.
+#'
+#' @param checked_manifest_tbl Manifest after remote checking.
+#' @param expression_file_types File types that count as expression matrices.
+#' @return Summary tibble with one row per species and experiment.
+summary_expression_matrix_availability <- function(
+  checked_manifest_tbl,
+  expression_file_types = c("tpms", "fpkms")
+) {
+  expression_file_types <- parse_expression_file_types(
+    expression_file_types = expression_file_types
+  )
+
+  if (nrow(checked_manifest_tbl) == 0L) {
+    return(
+      tibble::tibble(
+        species_column = character(),
+        experiment_accession = character(),
+        available_expression_file_types = character(),
+        has_expression_matrix = logical()
+      )
+    )
+  }
+
+  summary_tbl <- checked_manifest_tbl |>
+    dplyr::filter(.data$file_type %in% expression_file_types) |>
+    dplyr::filter(.data$remote_exists) |>
+    dplyr::filter(.data$remote_non_empty) |>
+    dplyr::group_by(.data$species_column, .data$experiment_accession) |>
+    dplyr::summarise(
+      available_expression_file_types = stringr::str_c(
+        sort(unique(.data$file_type)),
+        collapse = ","
+      ),
+      has_expression_matrix = TRUE,
+      .groups = "drop"
+    )
+
+  return(summary_tbl)
+}

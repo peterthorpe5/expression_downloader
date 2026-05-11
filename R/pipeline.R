@@ -13,6 +13,9 @@
 #' @param force_import Logical value controlling whether to rebuild Parquet files.
 #' @param create_duckdb Logical value controlling whether to create DuckDB views.
 #' @param duckdb_path Optional DuckDB database path for view creation.
+#' @param require_expression_matrix Logical value controlling whether to keep
+#'   only experiments with downloadable normalised expression matrices.
+#' @param expression_file_types File types that count as expression matrices.
 #' @return A named list of output paths and summary tables.
 run_expression_atlas_pipeline <- function(
   species_file,
@@ -22,7 +25,9 @@ run_expression_atlas_pipeline <- function(
   force_download = FALSE,
   force_import = FALSE,
   create_duckdb = TRUE,
-  duckdb_path = NULL
+  duckdb_path = NULL,
+  require_expression_matrix = TRUE,
+  expression_file_types = c("tpms", "fpkms")
 ) {
   manifest_dir <- file.path(output_dir, "manifests")
   download_dir <- file.path(output_dir, "downloads")
@@ -123,8 +128,39 @@ run_expression_atlas_pipeline <- function(
     file = checked_manifest_tsv
   )
 
-  download_log_tbl <- download_checked_manifest(
+  expression_availability_tbl <- summary_expression_matrix_availability(
     checked_manifest_tbl = checked_manifest_tbl,
+    expression_file_types = expression_file_types
+  )
+
+  expression_availability_tsv <- file.path(
+    manifest_dir,
+    "atlas_expression_matrix_availability.tsv"
+  )
+
+  readr::write_tsv(
+    x = expression_availability_tbl,
+    file = expression_availability_tsv
+  )
+
+  selected_checked_manifest_tbl <- filter_checked_manifest_to_expression_experiments(
+    checked_manifest_tbl = checked_manifest_tbl,
+    expression_file_types = expression_file_types,
+    require_expression_matrix = require_expression_matrix
+  )
+
+  selected_checked_manifest_tsv <- file.path(
+    manifest_dir,
+    "atlas_selected_checked_file_manifest.tsv"
+  )
+
+  readr::write_tsv(
+    x = selected_checked_manifest_tbl,
+    file = selected_checked_manifest_tsv
+  )
+
+  download_log_tbl <- download_checked_manifest(
+    checked_manifest_tbl = selected_checked_manifest_tbl,
     force = force_download
   )
 
@@ -135,7 +171,7 @@ run_expression_atlas_pipeline <- function(
     file = download_log_tsv
   )
 
-  downloaded_files_tbl <- checked_manifest_tbl |>
+  downloaded_files_tbl <- selected_checked_manifest_tbl |>
     dplyr::left_join(
       y = download_log_tbl,
       by = c("url", "local_path")
@@ -216,6 +252,8 @@ run_expression_atlas_pipeline <- function(
       experiment_manifest_tsv = experiment_manifest_tsv,
       ftp_manifest_tsv = ftp_manifest_tsv,
       checked_manifest_tsv = checked_manifest_tsv,
+      expression_availability_tsv = expression_availability_tsv,
+      selected_checked_manifest_tsv = selected_checked_manifest_tsv,
       download_log_tsv = download_log_tsv,
       downloaded_files_tsv = downloaded_files_tsv,
       import_summary_tsv = import_summary_tsv,

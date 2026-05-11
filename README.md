@@ -8,6 +8,7 @@ It is designed for the current project situation:
 - Expression Atlas experiment discovery can be attempted programmatically;
 - manually curated experiment accessions can also be supplied;
 - remote files are checked before download;
+- by default, only experiments with downloadable TPM/FPKM expression matrices are selected, so metadata-only and most microarray-only hits are ignored;
 - existing local non-empty files are skipped;
 - large expression matrices are converted to long Parquet using DuckDB SQL via `duckplyr`;
 - future Shiny queries can use lazy `duckplyr` tables rather than loading expression data into memory;
@@ -38,6 +39,8 @@ analysis/expression_atlas/
     atlas_candidate_experiments.tsv
     atlas_ftp_manifest.tsv
     atlas_checked_file_manifest.tsv
+    atlas_expression_matrix_availability.tsv
+    atlas_selected_checked_file_manifest.tsv
     atlas_download_log.tsv
     atlas_downloaded_files.tsv
     atlas_expression_import_summary.tsv
@@ -151,7 +154,9 @@ Rscript inst/scripts/run_all.R \
   --output_dir=analysis/expression_atlas \
   --force_download=false \
   --force_import=false \
-  --create_duckdb=true
+  --create_duckdb=true \
+  --require_expression_matrix=true \
+  --expression_file_types=tpms,fpkms
 ```
 
 This will:
@@ -161,8 +166,9 @@ This will:
 3. build expected Expression Atlas FTP paths;
 4. check remote files before downloading;
 5. skip any local files that already exist and are non-empty;
-6. download available Atlas files;
-7. normalise TPM/FPKM matrices to long Parquet;
+6. select only experiments with downloadable TPM/FPKM matrices by default;
+7. download available files for selected experiments, including matching SDRF and methods metadata;
+8. normalise TPM/FPKM matrices to long Parquet;
 8. create a DuckDB database with views over the Parquet files.
 
 ## 5. If ExpressionAtlas searching is not available
@@ -192,7 +198,9 @@ Rscript inst/scripts/run_all.R \
   --output_dir=analysis/expression_atlas \
   --force_download=false \
   --force_import=false \
-  --create_duckdb=true
+  --create_duckdb=true \
+  --require_expression_matrix=true \
+  --expression_file_types=tpms,fpkms
 ```
 
 ## 6. Optional Python download step
@@ -222,6 +230,8 @@ Then check/download the files with Python:
 ./inst/scripts/03b_download_atlas_files_python.sh \
   --output_dir=../analysis/expression_atlas \
   --force_download=false \
+  --require_expression_matrix=true \
+  --expression_file_types=tpms,fpkms \
   --timeout_seconds=30 \
   --retries=2
 ```
@@ -254,7 +264,9 @@ Rscript inst/scripts/02_search_atlas_experiments.R \
 Rscript inst/scripts/03_download_atlas_files.R \
   --experiment_manifest_tsv=analysis/expression_atlas/manifests/atlas_candidate_experiments.tsv \
   --output_dir=analysis/expression_atlas \
-  --force_download=false
+  --force_download=false \
+  --require_expression_matrix=true \
+  --expression_file_types=tpms,fpkms
 
 Rscript inst/scripts/04_import_expression_to_parquet.R \
   --downloaded_files_tsv=analysis/expression_atlas/manifests/atlas_downloaded_files.tsv \
@@ -398,6 +410,10 @@ output$expression_table <- DT::renderDataTable({
 - The package starts by preserving observed aliases from the inherited E3 table. A later layer can add UniProt, Ensembl Plants BioMart or other mappings.
 - Large matrices are not read into R memory during Parquet import; DuckDB SQL handles the wide-to-long conversion.
 
+
+## Version 0.1.5 note
+
+This version adds the default RNA-seq/normalised-expression filter. Candidate experiments are still discovered broadly, but after remote checks the downloader keeps only experiments where a TPM or FPKM matrix exists. It then downloads those matrices plus their matching SDRF/methods metadata. This avoids filling `downloads/` with metadata-only or microarray-only experiments that cannot be converted into the long expression Parquet table.
 
 ## Version 0.1.4 note
 

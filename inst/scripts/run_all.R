@@ -20,6 +20,17 @@ create_duckdb <- as_cli_logical(
   default = TRUE
 )
 duckdb_path <- get_cli_arg(parsed_args = args, name = "duckdb_path", default = NULL)
+require_expression_matrix <- as_cli_logical(
+  value = get_cli_arg(parsed_args = args, name = "require_expression_matrix", default = "true"),
+  default = TRUE
+)
+expression_file_types <- parse_expression_file_types(
+  expression_file_types = get_cli_arg(
+    parsed_args = args,
+    name = "expression_file_types",
+    default = "tpms,fpkms"
+  )
+)
 
 result <- run_expression_atlas_pipeline(
   species_file = species_file,
@@ -29,7 +40,9 @@ result <- run_expression_atlas_pipeline(
   force_download = force_download,
   force_import = force_import,
   create_duckdb = create_duckdb,
-  duckdb_path = duckdb_path
+  duckdb_path = duckdb_path,
+  require_expression_matrix = require_expression_matrix,
+  expression_file_types = expression_file_types
 )
 
 message("Pipeline finished.")
