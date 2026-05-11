@@ -399,6 +399,6 @@ output$expression_table <- DT::renderDataTable({
 - Large matrices are not read into R memory during Parquet import; DuckDB SQL handles the wide-to-long conversion.
 
 
-## Version 0.1.3 note
+## Version 0.1.4 note
 
 This version fixes a manifest-checking failure caused by a duplicate `url` column when unnesting remote-status results. It also adds an optional Python downloader for the remote-check/download stage.

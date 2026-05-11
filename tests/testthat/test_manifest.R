@@ -12,20 +12,17 @@ test_that("Expression Atlas FTP manifest has expected files", {
 })
 
 
-testthat::test_that("remote manifest checks keep one URL column", {
-  original_check_remote_file <- check_remote_file
-  testthat::local_mocked_bindings(
-    check_remote_file = function(url, timeout_seconds = 30L) {
-      tibble::tibble(
-        url = url,
-        remote_exists = TRUE,
-        remote_non_empty = TRUE,
-        status_code = 200L,
-        remote_bytes = 10,
-        check_method = "mock"
-      )
-    }
-  )
+test_that("remote manifest checks keep one URL column", {
+  mock_remote_checker <- function(url) {
+    tibble::tibble(
+      url = url,
+      remote_exists = TRUE,
+      remote_non_empty = TRUE,
+      status_code = 200L,
+      remote_bytes = 10,
+      check_method = "mock"
+    )
+  }
 
   manifest_tbl <- tibble::tibble(
     experiment_accession = "E-TEST-1",
@@ -36,9 +33,12 @@ testthat::test_that("remote manifest checks keep one URL column", {
     local_path = tempfile(fileext = ".tsv")
   )
 
-  checked_tbl <- check_manifest_remotes(manifest_tbl = manifest_tbl)
+  checked_tbl <- check_manifest_remotes(
+    manifest_tbl = manifest_tbl,
+    remote_checker = mock_remote_checker
+  )
 
-  testthat::expect_equal(sum(names(checked_tbl) == "url"), 1L)
-  testthat::expect_true("remote_exists" %in% names(checked_tbl))
-  testthat::expect_true(checked_tbl$remote_exists[[1L]])
+  expect_equal(sum(names(checked_tbl) == "url"), 1L)
+  expect_true("remote_exists" %in% names(checked_tbl))
+  expect_true(checked_tbl$remote_exists[[1L]])
 })

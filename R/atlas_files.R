@@ -140,15 +140,20 @@ check_remote_file <- function(url, timeout_seconds = 30L) {
 #' Check remote availability for a file manifest.
 #'
 #' @param manifest_tbl Candidate file manifest.
+#' @param remote_checker Function used to check each remote URL. This is
+#'   injectable so unit tests can avoid network calls.
 #' @return Manifest with remote status columns added.
-check_manifest_remotes <- function(manifest_tbl) {
+check_manifest_remotes <- function(
+  manifest_tbl,
+  remote_checker = check_remote_file
+) {
   checked_tbl <- manifest_tbl |>
     dplyr::mutate(
       remote_status = purrr::map(
         .x = .data$url,
         .f = function(url) {
-          check_remote_file(url = url) |>
-            dplyr::select(-.data$url)
+          remote_checker(url = url) |>
+            dplyr::select(-dplyr::any_of("url"))
         }
       )
     ) |>
