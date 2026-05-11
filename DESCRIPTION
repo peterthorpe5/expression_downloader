@@ -1,0 +1,35 @@
+Package: E3AtlasDuckplyr
+Type: Package
+Title: Duckplyr Expression Atlas Import Utilities for E3 Ligase Resources
+Version: 0.1.0
+Authors@R: c(
+    person(given = "Pete", family = "Thorpe", role = c("aut", "cre"), email = "p.thorpe@example.org")
+    )
+Description: Utilities for building an incremental Expression Atlas import layer
+    for an E3 ligase and HOG database. The package keeps a simple species file,
+    discovers Expression Atlas experiments, checks remote files before download,
+    downloads only missing non-empty files, normalises expression matrices into
+    long Parquet datasets, and exposes lazy query helpers through duckplyr.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.2
+Depends:
+    R (>= 4.2)
+Imports:
+    dplyr,
+    duckplyr,
+    fs,
+    httr2,
+    purrr,
+    readr,
+    rlang,
+    stringr,
+    tibble,
+    tidyr,
+    utils
+Suggests:
+    BiocManager,
+    ExpressionAtlas,
+    testthat (>= 3.0.0)
+Config/testthat/edition: 3
