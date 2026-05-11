@@ -99,7 +99,10 @@ From inside the unpacked package directory:
 
 ```bash
 R CMD INSTALL .
-Rscript -e 'testthat::test_dir("tests/testthat")'
+Rscript inst/scripts/08_run_tests.R
+
+# or, equivalently:
+Rscript -e 'library(E3AtlasDuckplyr); testthat::test_dir("tests/testthat")'
 ```
 
 Or, if you use `devtools`:
