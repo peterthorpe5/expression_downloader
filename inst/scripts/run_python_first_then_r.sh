@@ -10,6 +10,8 @@ CREATE_DUCKDB="true"
 TIMEOUT_SECONDS="30"
 RETRIES="2"
 MAX_EXPERIMENTS_PER_SPECIES="0"
+DISCOVERY_BACKEND="ftp_scan"
+FTP_SCAN_MAX_ACCESSIONS="0"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -31,6 +33,10 @@ while [[ $# -gt 0 ]]; do
     --retries) RETRIES="$2"; shift 2 ;;
     --max_experiments_per_species=*) MAX_EXPERIMENTS_PER_SPECIES="${1#*=}"; shift ;;
     --max_experiments_per_species) MAX_EXPERIMENTS_PER_SPECIES="$2"; shift 2 ;;
+    --discovery_backend=*) DISCOVERY_BACKEND="${1#*=}"; shift ;;
+    --discovery_backend) DISCOVERY_BACKEND="$2"; shift 2 ;;
+    --ftp_scan_max_accessions=*) FTP_SCAN_MAX_ACCESSIONS="${1#*=}"; shift ;;
+    --ftp_scan_max_accessions) FTP_SCAN_MAX_ACCESSIONS="$2"; shift 2 ;;
     *) echo "Unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -45,7 +51,9 @@ PKG_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
   --force_download "${FORCE_DOWNLOAD}" \
   --timeout_seconds "${TIMEOUT_SECONDS}" \
   --retries "${RETRIES}" \
-  --max_experiments_per_species "${MAX_EXPERIMENTS_PER_SPECIES}"
+  --max_experiments_per_species "${MAX_EXPERIMENTS_PER_SPECIES}" \
+  --discovery_backend "${DISCOVERY_BACKEND}" \
+  --ftp_scan_max_accessions "${FTP_SCAN_MAX_ACCESSIONS}"
 
 Rscript "${SCRIPT_DIR}/04_import_expression_to_parquet.R" \
   --downloaded_files_tsv="${OUTPUT_DIR}/manifests/atlas_downloaded_files.tsv" \

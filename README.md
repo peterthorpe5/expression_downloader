@@ -438,3 +438,8 @@ Quick command from the package root:
   --force_import=false \
   --create_duckdb=true
 ```
+
+
+## v0.2.1 note
+
+The Python-first downloader now uses an FTP-scan discovery backend by default. This avoids brittle Expression Atlas / ArrayExpress XML searches by listing Expression Atlas experiment directories from the public FTP index, checking for real TPM/FPKM matrices, and then matching experiments back to the requested species using SDRF metadata where available.

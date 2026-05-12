@@ -48,6 +48,9 @@ DEFAULT_DOWNLOAD_TYPES = (
     "analysis_methods",
     "r_object",
 )
+DEFAULT_FTP_INDEX_URL = (
+    "https://ftp.ebi.ac.uk/pub/databases/microarray/data/atlas/experiments/"
+)
 
 
 @dataclass(frozen=True)
@@ -348,7 +351,7 @@ def request_text(url: str, timeout_seconds: int) -> str:
 
     request = urllib.request.Request(
         url=url,
-        headers={"User-Agent": "E3AtlasDuckplyr/0.2.0"},
+        headers={"User-Agent": "E3AtlasDuckplyr/0.2.1"},
         method="GET",
     )
 
@@ -506,6 +509,416 @@ def search_species_accessions(
     return results
 
 
+
+
+def normalise_species_name(value: str) -> str:
+    """Normalise a species name for robust matching.
+
+    Parameters
+    ----------
+    value:
+        Species name or species-column style value.
+
+    Returns
+    -------
+    str
+        Lower-case species name with underscores converted to spaces and
+        repeated whitespace collapsed.
+    """
+
+    normalised = value.replace("_", " ").strip().lower()
+    normalised = re.sub(r"\s+", " ", normalised)
+    return normalised
+
+
+def species_matches_record(observed_species: str, species_record: SpeciesRecord) -> bool:
+    """Return true when an observed metadata species matches a target record.
+
+    Expression Atlas sometimes uses more specific names such as
+    ``Zea mays subsp. mays`` while the project species list may contain
+    ``Zea mays``. The match therefore allows exact matches and conservative
+    prefix matches in either direction.
+
+    Parameters
+    ----------
+    observed_species:
+        Species value observed in Expression Atlas metadata.
+    species_record:
+        Target species record from ``species.txt``.
+
+    Returns
+    -------
+    bool
+        Whether the observed species should be assigned to this target species.
+    """
+
+    observed = normalise_species_name(observed_species)
+    targets = {
+        normalise_species_name(species_record.scientific_name),
+        normalise_species_name(species_record.atlas_species_query),
+        normalise_species_name(species_record.species_column),
+    }
+
+    for target in targets:
+        if not target:
+            continue
+        if observed == target:
+            return True
+        if observed.startswith(target + " "):
+            return True
+        if target.startswith(observed + " "):
+            return True
+
+    return False
+
+
+def list_ftp_accessions(
+    ftp_index_url: str,
+    timeout_seconds: int,
+    retries: int,
+    log_file: Optional[Path] = None,
+) -> list[str]:
+    """List Expression Atlas experiment accessions from the FTP index.
+
+    This avoids the brittle ArrayExpress/XML search route. The FTP experiment
+    index is a simple HTML directory listing, so a regular expression over the
+    returned text is sufficient and robust.
+
+    Parameters
+    ----------
+    ftp_index_url:
+        URL of the Expression Atlas experiment FTP index.
+    timeout_seconds:
+        Request timeout in seconds.
+    retries:
+        Number of retries.
+    log_file:
+        Optional log file.
+
+    Returns
+    -------
+    list[str]
+        Unique experiment accessions in the order they appear.
+    """
+
+    text = ""
+    last_error = ""
+
+    for attempt in range(1, retries + 2):
+        try:
+            text = request_text(url=ftp_index_url, timeout_seconds=timeout_seconds)
+            break
+        except Exception as error:  # noqa: BLE001 - command-line workflow should continue cleanly
+            last_error = str(error)
+            if attempt <= retries:
+                time.sleep(min(5, attempt))
+
+    if not text:
+        raise RuntimeError(f"Could not read FTP index {ftp_index_url}: {last_error}")
+
+    accessions = extract_accessions_from_text(text=text)
+    log(f"FTP index contained {len(accessions)} candidate accessions", log_file=log_file)
+    return accessions
+
+
+def fetch_optional_text(url: str, timeout_seconds: int, retries: int) -> str:
+    """Fetch text from a URL, returning an empty string on failure.
+
+    Parameters
+    ----------
+    url:
+        URL to retrieve.
+    timeout_seconds:
+        Request timeout in seconds.
+    retries:
+        Number of retries.
+
+    Returns
+    -------
+    str
+        Response text, or an empty string when the URL could not be read.
+    """
+
+    last_error = ""
+    for attempt in range(1, retries + 2):
+        try:
+            return request_text(url=url, timeout_seconds=timeout_seconds)
+        except Exception as error:  # noqa: BLE001 - optional metadata read
+            last_error = str(error)
+            if attempt <= retries:
+                time.sleep(min(5, attempt))
+    _ = last_error
+    return ""
+
+
+def extract_species_from_sdrf_text(metadata_text: str) -> list[str]:
+    """Extract organism/species values from an SDRF-style TSV.
+
+    Parameters
+    ----------
+    metadata_text:
+        Text content of an Expression Atlas condensed SDRF metadata file.
+
+    Returns
+    -------
+    list[str]
+        Unique species values.
+    """
+
+    if not metadata_text.strip():
+        return []
+
+    lines = metadata_text.splitlines()
+    if not lines:
+        return []
+
+    reader = csv.reader(lines, delimiter="\t")
+    try:
+        header = next(reader)
+    except StopIteration:
+        return []
+
+    organism_indices = [
+        index for index, column in enumerate(header)
+        if "organism" in column.lower() or "species" in column.lower()
+    ]
+
+    if not organism_indices:
+        return []
+
+    seen: set[str] = set()
+    values: list[str] = []
+
+    for row_number, row in enumerate(reader, start=1):
+        for index in organism_indices:
+            if index >= len(row):
+                continue
+            value = row[index].strip()
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            values.append(value)
+        if row_number >= 5000:
+            break
+
+    return values
+
+
+def extract_species_from_experiment_page(page_text: str) -> list[str]:
+    """Extract organism values from a rendered Expression Atlas page.
+
+    Parameters
+    ----------
+    page_text:
+        HTML or text from an Expression Atlas experiment page.
+
+    Returns
+    -------
+    list[str]
+        Unique organism strings detected on the page.
+    """
+
+    if not page_text:
+        return []
+
+    pattern = re.compile(r"Organism:\s*([^\n<]+)", flags=re.IGNORECASE)
+    values: list[str] = []
+    seen: set[str] = set()
+
+    for match in pattern.finditer(page_text):
+        value = re.sub(r"\s+", " ", match.group(1)).strip()
+        if value and value not in seen:
+            seen.add(value)
+            values.append(value)
+
+    return values
+
+
+def match_species_records(
+    observed_species_values: list[str],
+    species_records: list[SpeciesRecord],
+) -> list[SpeciesRecord]:
+    """Match observed Expression Atlas species values to target records.
+
+    Parameters
+    ----------
+    observed_species_values:
+        Species values extracted from metadata or an experiment page.
+    species_records:
+        Target species records.
+
+    Returns
+    -------
+    list[SpeciesRecord]
+        Matching species records.
+    """
+
+    matches: list[SpeciesRecord] = []
+    seen: set[str] = set()
+
+    for observed in observed_species_values:
+        for record in species_records:
+            if record.species_column in seen:
+                continue
+            if species_matches_record(observed_species=observed, species_record=record):
+                matches.append(record)
+                seen.add(record.species_column)
+
+    return matches
+
+
+def discover_candidates_by_ftp_scan(
+    species_records: list[SpeciesRecord],
+    output_dir: Path,
+    ftp_index_url: str,
+    expression_file_types: tuple[str, ...],
+    timeout_seconds: int,
+    retries: int,
+    max_experiments_per_species: int,
+    ftp_scan_max_accessions: int,
+    log_file: Optional[Path],
+) -> list[CandidateExperiment]:
+    """Discover Expression Atlas candidates by scanning the FTP index.
+
+    The workflow is:
+    1. list experiment directories from the FTP index;
+    2. check whether each experiment has a TPM/FPKM file;
+    3. inspect metadata/page text to determine organism;
+    4. retain only experiments matching the requested species list.
+
+    Parameters
+    ----------
+    species_records:
+        Target species records.
+    output_dir:
+        Root output directory.
+    ftp_index_url:
+        Expression Atlas FTP experiment index URL.
+    expression_file_types:
+        Expression matrices to require, usually ``tpms`` and ``fpkms``.
+    timeout_seconds:
+        Request timeout in seconds.
+    retries:
+        Number of retries.
+    max_experiments_per_species:
+        Optional cap per species. Zero means no cap.
+    ftp_scan_max_accessions:
+        Optional cap on FTP accessions scanned. Zero means no cap.
+    log_file:
+        Optional log file.
+
+    Returns
+    -------
+    list[CandidateExperiment]
+        Candidate experiments that have TPM/FPKM files and match requested
+        species metadata.
+    """
+
+    accessions = list_ftp_accessions(
+        ftp_index_url=ftp_index_url,
+        timeout_seconds=timeout_seconds,
+        retries=retries,
+        log_file=log_file,
+    )
+
+    if ftp_scan_max_accessions and len(accessions) > ftp_scan_max_accessions:
+        log(
+            f"Limiting FTP scan from {len(accessions)} to {ftp_scan_max_accessions} accessions",
+            log_file=log_file,
+        )
+        accessions = accessions[:ftp_scan_max_accessions]
+
+    species_counts: dict[str, int] = {record.species_column: 0 for record in species_records}
+    candidates: list[CandidateExperiment] = []
+
+    for index, accession in enumerate(accessions, start=1):
+        if index == 1 or index % 100 == 0:
+            log(f"FTP scan progress: {index}/{len(accessions)} accessions", log_file=log_file)
+
+        dummy_candidate = CandidateExperiment(
+            species_column="unknown_species",
+            atlas_species_query="unknown species",
+            search_term="ftp_scan",
+            accession=accession,
+            search_url=ftp_index_url,
+            source="ftp_scan",
+        )
+
+        expression_files = build_remote_files(
+            candidate=dummy_candidate,
+            output_dir=output_dir,
+            download_file_types=expression_file_types,
+        )
+
+        available_expression_types: list[str] = []
+        for remote_file in expression_files:
+            exists, non_empty, _, _, _ = check_remote_file(
+                url=remote_file.url,
+                timeout_seconds=timeout_seconds,
+            )
+            if exists and non_empty:
+                available_expression_types.append(remote_file.file_type)
+
+        if not available_expression_types:
+            continue
+
+        base_url = ftp_index_url.rstrip("/") + f"/{accession}/"
+        metadata_url = base_url + urllib.parse.quote(f"{accession}.condensed-sdrf.tsv")
+        page_url = f"https://www.ebi.ac.uk/gxa/experiments/{accession}"
+
+        metadata_text = fetch_optional_text(
+            url=metadata_url,
+            timeout_seconds=timeout_seconds,
+            retries=retries,
+        )
+        observed_species = extract_species_from_sdrf_text(metadata_text=metadata_text)
+
+        if not observed_species:
+            page_text = fetch_optional_text(
+                url=page_url,
+                timeout_seconds=timeout_seconds,
+                retries=retries,
+            )
+            observed_species = extract_species_from_experiment_page(page_text=page_text)
+
+        matched_records = match_species_records(
+            observed_species_values=observed_species,
+            species_records=species_records,
+        )
+
+        if not matched_records:
+            continue
+
+        for matched_record in matched_records:
+            current_count = species_counts.get(matched_record.species_column, 0)
+            if max_experiments_per_species and current_count >= max_experiments_per_species:
+                continue
+
+            candidates.append(
+                CandidateExperiment(
+                    species_column=matched_record.species_column,
+                    atlas_species_query=matched_record.atlas_species_query,
+                    search_term="ftp_scan",
+                    accession=accession,
+                    search_url=ftp_index_url,
+                    source="ftp_scan_metadata",
+                )
+            )
+            species_counts[matched_record.species_column] = current_count + 1
+
+    kept_summary = ", ".join(
+        f"{species}={count}" for species, count in sorted(species_counts.items()) if count
+    )
+    log(
+        "FTP scan retained "
+        f"{len(candidates)} experiments matching requested species"
+        + (f": {kept_summary}" if kept_summary else ""),
+        log_file=log_file,
+    )
+
+    return candidates
+
+
 def build_remote_files(
     candidate: CandidateExperiment,
     output_dir: Path,
@@ -602,7 +1015,7 @@ def check_remote_file(url: str, timeout_seconds: int) -> tuple[bool, bool, int |
 
     request = urllib.request.Request(
         url=url,
-        headers={"User-Agent": "E3AtlasDuckplyr/0.2.0"},
+        headers={"User-Agent": "E3AtlasDuckplyr/0.2.1"},
         method="HEAD",
     )
 
@@ -625,7 +1038,7 @@ def check_remote_file(url: str, timeout_seconds: int) -> tuple[bool, bool, int |
     request = urllib.request.Request(
         url=url,
         headers={
-            "User-Agent": "E3AtlasDuckplyr/0.2.0",
+            "User-Agent": "E3AtlasDuckplyr/0.2.1",
             "Range": "bytes=0-0",
         },
         method="GET",
@@ -688,7 +1101,7 @@ def download_file(
         try:
             request = urllib.request.Request(
                 url=remote_file.url,
-                headers={"User-Agent": "E3AtlasDuckplyr/0.2.0"},
+                headers={"User-Agent": "E3AtlasDuckplyr/0.2.1"},
                 method="GET",
             )
             with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
@@ -739,6 +1152,19 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--minimum_bytes", type=int, default=1)
     parser.add_argument("--max_experiments_per_species", type=int, default=0)
     parser.add_argument("--manual_experiment_tsv", default=None)
+    parser.add_argument(
+        "--discovery_backend",
+        default="ftp_scan",
+        choices=("ftp_scan", "arrayexpress_api"),
+        help="Discovery backend. ftp_scan is the robust default.",
+    )
+    parser.add_argument("--ftp_index_url", default=DEFAULT_FTP_INDEX_URL)
+    parser.add_argument(
+        "--ftp_scan_max_accessions",
+        type=int,
+        default=0,
+        help="Optional cap on FTP accessions scanned for smoke tests. Zero means no cap.",
+    )
     args = parser.parse_args(argv)
 
     species_file = Path(args.species_file)
@@ -801,34 +1227,49 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     candidates: list[CandidateExperiment] = []
 
-    for species_record in species_records:
-        log(
-            f"Searching {species_record.species_column} using query "
-            f"{species_record.atlas_species_query!r}",
-            log_file=log_file,
-        )
-        species_candidates = search_species_accessions(
-            species_record=species_record,
-            search_terms=search_terms,
+    if args.discovery_backend == "ftp_scan":
+        log("Using robust FTP-scan discovery backend", log_file=log_file)
+        candidates = discover_candidates_by_ftp_scan(
+            species_records=species_records,
+            output_dir=output_dir,
+            ftp_index_url=args.ftp_index_url,
+            expression_file_types=expression_file_types,
             timeout_seconds=args.timeout_seconds,
             retries=args.retries,
+            max_experiments_per_species=args.max_experiments_per_species,
+            ftp_scan_max_accessions=args.ftp_scan_max_accessions,
             log_file=log_file,
         )
-
-        if args.max_experiments_per_species and len(species_candidates) > args.max_experiments_per_species:
+    else:
+        log("Using legacy ArrayExpress API discovery backend", log_file=log_file)
+        for species_record in species_records:
             log(
-                f"Limiting {species_record.species_column} from "
-                f"{len(species_candidates)} to {args.max_experiments_per_species} experiments",
+                f"Searching {species_record.species_column} using query "
+                f"{species_record.atlas_species_query!r}",
                 log_file=log_file,
             )
-            species_candidates = species_candidates[: args.max_experiments_per_species]
+            species_candidates = search_species_accessions(
+                species_record=species_record,
+                search_terms=search_terms,
+                timeout_seconds=args.timeout_seconds,
+                retries=args.retries,
+                log_file=log_file,
+            )
 
-        candidates.extend(species_candidates)
-        log(
-            f"Candidate experiments for {species_record.species_column}: "
-            f"{len(species_candidates)}",
-            log_file=log_file,
-        )
+            if args.max_experiments_per_species and len(species_candidates) > args.max_experiments_per_species:
+                log(
+                    f"Limiting {species_record.species_column} from "
+                    f"{len(species_candidates)} to {args.max_experiments_per_species} experiments",
+                    log_file=log_file,
+                )
+                species_candidates = species_candidates[: args.max_experiments_per_species]
+
+            candidates.extend(species_candidates)
+            log(
+                f"Candidate experiments for {species_record.species_column}: "
+                f"{len(species_candidates)}",
+                log_file=log_file,
+            )
 
     if args.manual_experiment_tsv:
         manual_path = Path(args.manual_experiment_tsv)

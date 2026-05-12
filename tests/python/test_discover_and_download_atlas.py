@@ -80,6 +80,45 @@ class TestDiscoverAndDownloadAtlas(unittest.TestCase):
         )
         self.assertEqual(records[0].atlas_species_query, "Arabidopsis thaliana")
 
+    def test_species_matching_allows_subspecies(self):
+        """Species matching should accept conservative subspecies labels."""
+
+        record = MODULE.SpeciesRecord(
+            species_column="Zea_mays",
+            scientific_name="Zea mays",
+            atlas_species_query="Zea mays",
+        )
+
+        self.assertTrue(
+            MODULE.species_matches_record(
+                observed_species="Zea mays subsp. mays",
+                species_record=record,
+            )
+        )
+
+    def test_extract_species_from_sdrf_text(self):
+        """SDRF parsing should extract organism metadata."""
+
+        text = (
+            "Source Name\tCharacteristics[organism]\tAssay Name\n"
+            "sample1\tArabidopsis thaliana\tassay1\n"
+            "sample2\tArabidopsis thaliana\tassay2\n"
+        )
+
+        self.assertEqual(
+            MODULE.extract_species_from_sdrf_text(metadata_text=text),
+            ["Arabidopsis thaliana"],
+        )
+
+    def test_list_ftp_accessions_from_text_regex_helper(self):
+        """FTP-style index text should yield accessions via the shared regex."""
+
+        text = '<a href="E-MTAB-4342/">E-MTAB-4342/</a> <a href="E-GEOD-1/">x</a>'
+        self.assertEqual(
+            MODULE.extract_accessions_from_text(text),
+            ["E-MTAB-4342", "E-GEOD-1"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
