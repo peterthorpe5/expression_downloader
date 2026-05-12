@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import csv
 import datetime as _dt
+import json
 import os
 import re
 import shutil
@@ -74,6 +75,7 @@ class CandidateExperiment:
     accession: str
     search_url: str
     source: str
+    remote_file_names: str = ""
 
 
 @dataclass(frozen=True)
@@ -417,6 +419,191 @@ def extract_accessions_from_text(text: str) -> list[str]:
             accessions.append(accession)
 
     return accessions
+
+
+def extract_href_values(html_text: str) -> list[str]:
+    """Extract href values from an HTML directory listing.
+
+    Parameters
+    ----------
+    html_text:
+        HTML text from a web or FTP directory listing.
+
+    Returns
+    -------
+    list[str]
+        Unique href values in first-seen order.
+    """
+
+    pattern = re.compile(r'href=["\']([^"\']+)["\']', flags=re.IGNORECASE)
+    seen: set[str] = set()
+    hrefs: list[str] = []
+
+    for match in pattern.finditer(html_text):
+        href = urllib.parse.unquote(match.group(1)).strip()
+        if not href or href in {"../", "./"}:
+            continue
+        if href not in seen:
+            seen.add(href)
+            hrefs.append(href)
+
+    return hrefs
+
+
+def detect_atlas_file_type(file_name: str) -> Optional[str]:
+    """Infer the Expression Atlas file type from a filename.
+
+    Expression Atlas filenames are not fully standard across releases. Some
+    baseline RNA-seq experiments use names such as
+    ``E-MTAB-4342-query-results.tpms.tsv`` rather than
+    ``E-MTAB-4342-tpms.tsv``. This helper therefore detects file types from
+    filename content rather than relying on one exact template.
+
+    Parameters
+    ----------
+    file_name:
+        Filename from an Expression Atlas FTP experiment directory.
+
+    Returns
+    -------
+    Optional[str]
+        One of the package file-type labels, or ``None`` when the file is not
+        relevant to this workflow.
+    """
+
+    lower_name = file_name.lower()
+
+    if "transcript" in lower_name and "tpm" in lower_name:
+        return "transcript_tpms"
+
+    if "fpkm" in lower_name:
+        return "fpkms"
+
+    if "tpm" in lower_name:
+        return "tpms"
+
+    if "sdrf" in lower_name or "experiment-design" in lower_name:
+        return "sample_metadata"
+
+    if "analysis-method" in lower_name:
+        return "analysis_methods"
+
+    if "atlasexperimentsummary" in lower_name and lower_name.endswith(".rdata"):
+        return "r_object"
+
+    return None
+
+
+def list_experiment_ftp_files(
+    accession: str,
+    ftp_index_url: str,
+    timeout_seconds: int,
+    retries: int,
+) -> dict[str, list[str]]:
+    """List relevant files for one Expression Atlas FTP experiment.
+
+    Parameters
+    ----------
+    accession:
+        Expression Atlas experiment accession.
+    ftp_index_url:
+        Base Expression Atlas FTP experiments URL.
+    timeout_seconds:
+        Request timeout in seconds.
+    retries:
+        Number of retries.
+
+    Returns
+    -------
+    dict[str, list[str]]
+        Mapping from file type to one or more actual filenames observed in the
+        experiment directory.
+    """
+
+    experiment_url = ftp_index_url.rstrip("/") + f"/{accession}/"
+    index_text = fetch_optional_text(
+        url=experiment_url,
+        timeout_seconds=timeout_seconds,
+        retries=retries,
+    )
+
+    if not index_text:
+        return {}
+
+    files_by_type: dict[str, list[str]] = {}
+
+    for href in extract_href_values(index_text):
+        if href.endswith("/"):
+            continue
+
+        file_name = Path(urllib.parse.urlparse(href).path).name
+        if not file_name:
+            continue
+
+        file_type = detect_atlas_file_type(file_name=file_name)
+        if file_type is None:
+            continue
+
+        files_by_type.setdefault(file_type, [])
+        if file_name not in files_by_type[file_type]:
+            files_by_type[file_type].append(file_name)
+
+    return files_by_type
+
+
+def encode_remote_file_names(files_by_type: dict[str, list[str]]) -> str:
+    """Encode actual FTP filenames for storage in a manifest/dataclass.
+
+    Parameters
+    ----------
+    files_by_type:
+        Mapping from file type to actual filenames.
+
+    Returns
+    -------
+    str
+        Compact JSON representation.
+    """
+
+    if not files_by_type:
+        return ""
+
+    return json.dumps(files_by_type, sort_keys=True)
+
+
+def decode_remote_file_names(remote_file_names: str) -> dict[str, list[str]]:
+    """Decode the actual FTP filename mapping stored on a candidate.
+
+    Parameters
+    ----------
+    remote_file_names:
+        JSON string produced by :func:`encode_remote_file_names`.
+
+    Returns
+    -------
+    dict[str, list[str]]
+        Mapping from file type to actual filenames.
+    """
+
+    if not remote_file_names:
+        return {}
+
+    try:
+        raw = json.loads(remote_file_names)
+    except json.JSONDecodeError:
+        return {}
+
+    decoded: dict[str, list[str]] = {}
+    if not isinstance(raw, dict):
+        return decoded
+
+    for key, value in raw.items():
+        if isinstance(value, list):
+            decoded[str(key)] = [str(item) for item in value]
+        elif value:
+            decoded[str(key)] = [str(value)]
+
+    return decoded
 
 
 def search_species_accessions(
@@ -835,43 +1022,38 @@ def discover_candidates_by_ftp_scan(
         if index == 1 or index % 100 == 0:
             log(f"FTP scan progress: {index}/{len(accessions)} accessions", log_file=log_file)
 
-        dummy_candidate = CandidateExperiment(
-            species_column="unknown_species",
-            atlas_species_query="unknown species",
-            search_term="ftp_scan",
+        files_by_type = list_experiment_ftp_files(
             accession=accession,
-            search_url=ftp_index_url,
-            source="ftp_scan",
+            ftp_index_url=ftp_index_url,
+            timeout_seconds=timeout_seconds,
+            retries=retries,
         )
 
-        expression_files = build_remote_files(
-            candidate=dummy_candidate,
-            output_dir=output_dir,
-            download_file_types=expression_file_types,
-        )
-
-        available_expression_types: list[str] = []
-        for remote_file in expression_files:
-            exists, non_empty, _, _, _ = check_remote_file(
-                url=remote_file.url,
-                timeout_seconds=timeout_seconds,
-            )
-            if exists and non_empty:
-                available_expression_types.append(remote_file.file_type)
+        available_expression_types = [
+            file_type for file_type in expression_file_types
+            if files_by_type.get(file_type)
+        ]
 
         if not available_expression_types:
             continue
 
         base_url = ftp_index_url.rstrip("/") + f"/{accession}/"
-        metadata_url = base_url + urllib.parse.quote(f"{accession}.condensed-sdrf.tsv")
         page_url = f"https://www.ebi.ac.uk/gxa/experiments/{accession}"
 
-        metadata_text = fetch_optional_text(
-            url=metadata_url,
-            timeout_seconds=timeout_seconds,
-            retries=retries,
-        )
-        observed_species = extract_species_from_sdrf_text(metadata_text=metadata_text)
+        observed_species: list[str] = []
+        for metadata_file_name in files_by_type.get("sample_metadata", []):
+            metadata_url = base_url + urllib.parse.quote(metadata_file_name)
+            metadata_text = fetch_optional_text(
+                url=metadata_url,
+                timeout_seconds=timeout_seconds,
+                retries=retries,
+            )
+            observed_species.extend(
+                extract_species_from_sdrf_text(metadata_text=metadata_text)
+            )
+
+        # De-duplicate while preserving order.
+        observed_species = list(dict.fromkeys(observed_species))
 
         if not observed_species:
             page_text = fetch_optional_text(
@@ -902,6 +1084,7 @@ def discover_candidates_by_ftp_scan(
                     accession=accession,
                     search_url=ftp_index_url,
                     source="ftp_scan_metadata",
+                    remote_file_names=encode_remote_file_names(files_by_type),
                 )
             )
             species_counts[matched_record.species_column] = current_count + 1
@@ -947,42 +1130,47 @@ def build_remote_files(
         f"experiments/{accession}/"
     )
 
-    names = {
-        "tpms": f"{accession}-tpms.tsv",
-        "fpkms": f"{accession}-fpkms.tsv",
-        "transcript_tpms": f"{accession}-transcript_tpms.tsv",
-        "sample_metadata": f"{accession}.condensed-sdrf.tsv",
-        "analysis_methods": f"{accession}-analysis-methods.tsv",
-        "r_object": f"{accession}-atlasExperimentSummary.Rdata",
+    fallback_names = {
+        "tpms": [f"{accession}-tpms.tsv"],
+        "fpkms": [f"{accession}-fpkms.tsv"],
+        "transcript_tpms": [f"{accession}-transcript_tpms.tsv"],
+        "sample_metadata": [f"{accession}.condensed-sdrf.tsv"],
+        "analysis_methods": [f"{accession}-analysis-methods.tsv"],
+        "r_object": [f"{accession}-atlasExperimentSummary.Rdata"],
     }
+
+    actual_names = decode_remote_file_names(
+        remote_file_names=candidate.remote_file_names
+    )
 
     files: list[RemoteFile] = []
 
     for file_type in download_file_types:
-        file_name = names.get(file_type)
+        file_names = actual_names.get(file_type)
 
-        if file_name is None:
-            continue
+        if not file_names:
+            file_names = fallback_names.get(file_type, [])
 
-        local_path = (
-            output_dir
-            / "downloads"
-            / candidate.species_column
-            / candidate.accession
-            / file_name
-        )
-
-        files.append(
-            RemoteFile(
-                species_column=candidate.species_column,
-                atlas_species_query=candidate.atlas_species_query,
-                experiment_accession=candidate.accession,
-                file_type=file_type,
-                file_name=file_name,
-                url=base_url + urllib.parse.quote(file_name),
-                local_path=local_path,
+        for file_name in file_names:
+            local_path = (
+                output_dir
+                / "downloads"
+                / candidate.species_column
+                / candidate.accession
+                / file_name
             )
-        )
+
+            files.append(
+                RemoteFile(
+                    species_column=candidate.species_column,
+                    atlas_species_query=candidate.atlas_species_query,
+                    experiment_accession=candidate.accession,
+                    file_type=file_type,
+                    file_name=file_name,
+                    url=base_url + urllib.parse.quote(file_name),
+                    local_path=local_path,
+                )
+            )
 
     return files
 
@@ -1308,6 +1496,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "experiment_accession": candidate.accession,
                 "search_url": candidate.search_url,
                 "source": candidate.source,
+                "remote_file_names": candidate.remote_file_names,
             }
             for candidate in candidates
         ],
@@ -1318,6 +1507,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             "experiment_accession",
             "search_url",
             "source",
+            "remote_file_names",
         ],
     )
 
@@ -1457,6 +1647,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         "local_bytes",
         "checked_at",
     ]
+
+    # Always create the downloaded-files manifest, even when no downloads were
+    # selected. This lets downstream wrapper scripts detect an empty result
+    # cleanly instead of failing because the file is absent.
+    write_tsv(
+        path=downloaded_path,
+        rows=[],
+        fieldnames=download_fields,
+    )
 
     for index, remote_file in enumerate(selected_remote_files, start=1):
         if index % 25 == 0:

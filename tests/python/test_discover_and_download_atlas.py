@@ -120,5 +120,64 @@ class TestDiscoverAndDownloadAtlas(unittest.TestCase):
         )
 
 
+class TestFtpFilenameDiscovery(unittest.TestCase):
+    """Tests for variable Expression Atlas FTP filename handling."""
+
+    def test_detect_query_result_tpm_filename(self):
+        """Baseline query-result TPM filenames should be detected as TPMs."""
+
+        self.assertEqual(
+            MODULE.detect_atlas_file_type("E-MTAB-4342-query-results.tpms.tsv"),
+            "tpms",
+        )
+        self.assertEqual(
+            MODULE.detect_atlas_file_type("E-MTAB-4342-query-results.fpkms.tsv"),
+            "fpkms",
+        )
+
+    def test_extract_href_values_from_ftp_listing(self):
+        """FTP directory listings should expose href filenames."""
+
+        html = (
+            '<a href="E-MTAB-4342-query-results.tpms.tsv">TPM</a> '
+            '<a href="E-MTAB-4342.condensed-sdrf.tsv">SDRF</a>'
+        )
+        self.assertEqual(
+            MODULE.extract_href_values(html),
+            [
+                "E-MTAB-4342-query-results.tpms.tsv",
+                "E-MTAB-4342.condensed-sdrf.tsv",
+            ],
+        )
+
+    def test_build_remote_files_uses_actual_ftp_names_when_available(self):
+        """Actual FTP filenames should override older fallback templates."""
+
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            candidate = MODULE.CandidateExperiment(
+                species_column="Zea_mays",
+                atlas_species_query="Zea mays",
+                search_term="ftp_scan",
+                accession="E-MTAB-4342",
+                search_url="test",
+                source="unit_test",
+                remote_file_names=MODULE.encode_remote_file_names(
+                    {
+                        "tpms": ["E-MTAB-4342-query-results.tpms.tsv"],
+                        "sample_metadata": ["E-MTAB-4342.condensed-sdrf.tsv"],
+                    }
+                ),
+            )
+            files = MODULE.build_remote_files(
+                candidate=candidate,
+                output_dir=Path(temporary_dir),
+                download_file_types=("tpms", "sample_metadata"),
+            )
+            names = {item.file_name for item in files}
+
+        self.assertIn("E-MTAB-4342-query-results.tpms.tsv", names)
+        self.assertNotIn("E-MTAB-4342-tpms.tsv", names)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -55,8 +55,22 @@ PKG_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
   --discovery_backend "${DISCOVERY_BACKEND}" \
   --ftp_scan_max_accessions "${FTP_SCAN_MAX_ACCESSIONS}"
 
+DOWNLOADED_MANIFEST="${OUTPUT_DIR}/manifests/atlas_downloaded_files.tsv"
+
+if [[ ! -s "${DOWNLOADED_MANIFEST}" ]]; then
+  echo "No downloaded-files manifest was created. Skipping Parquet import." >&2
+  exit 0
+fi
+
+EXPRESSION_DOWNLOAD_COUNT=$(awk -F '\t' 'NR > 1 && ($4 == "tpms" || $4 == "fpkms") && $9 == "true" {count++} END {print count + 0}' "${DOWNLOADED_MANIFEST}")
+
+if [[ "${EXPRESSION_DOWNLOAD_COUNT}" -eq 0 ]]; then
+  echo "No successful TPM/FPKM downloads were found. Skipping Parquet import." >&2
+  exit 0
+fi
+
 Rscript "${SCRIPT_DIR}/04_import_expression_to_parquet.R" \
-  --downloaded_files_tsv="${OUTPUT_DIR}/manifests/atlas_downloaded_files.tsv" \
+  --downloaded_files_tsv="${DOWNLOADED_MANIFEST}" \
   --output_dir="${OUTPUT_DIR}" \
   --force_import="${FORCE_IMPORT}"
 
