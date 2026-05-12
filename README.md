@@ -419,3 +419,22 @@ This version adds the default RNA-seq/normalised-expression filter. Candidate ex
 ## Version 0.1.4 note
 
 This version fixes a manifest-checking failure caused by a duplicate `url` column when unnesting remote-status results. It also adds an optional Python downloader for the remote-check/download stage.
+
+
+## Python-first Expression Atlas workflow
+
+For cluster runs, prefer the Python-first workflow documented in
+`PYTHON_FIRST_WORKFLOW.md`. It uses Python for web discovery/downloads and R for
+Parquet/DuckDB/duckplyr import.
+
+Quick command from the package root:
+
+```bash
+./inst/scripts/run_python_first_then_r.sh \
+  --species_file=data/species.txt \
+  --override_tsv=data/species_overrides.tsv \
+  --output_dir=../analysis/expression_atlas_python \
+  --force_download=false \
+  --force_import=false \
+  --create_duckdb=true
+```

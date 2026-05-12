@@ -4,6 +4,10 @@ channels:
   - bioconda
 channel_priority: strict
 dependencies:
+  - python>=3.10,<3.13
+  - ca-certificates
+  - certifi
+  - openssl
   - r-base>=4.3
   - r-dplyr
   - r-duckplyr
