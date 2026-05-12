@@ -6,13 +6,51 @@
 #' @param expression_tsv Path to an Expression Atlas TSV file.
 #' @return A list containing gene ID column, gene name column and expression columns.
 detect_expression_columns <- function(expression_tsv) {
-  header_tbl <- readr::read_tsv(
-    file = expression_tsv,
-    n_max = 0L,
-    show_col_types = FALSE
+  if (!local_file_is_usable(file_path = expression_tsv)) {
+    stop(
+      stringr::str_c(
+        "Expression TSV is missing or empty: ",
+        expression_tsv
+      ),
+      call. = FALSE
+    )
+  }
+
+  # Use base R for the header rather than readr/vroom. Some Expression
+  # Atlas matrices have very wide headers, and vroom can fail before it has
+  # read any data unless VROOM_CONNECTION_SIZE is increased. We only need
+  # the first line here, so base readLines is more robust and avoids loading
+  # the full matrix into memory.
+  connection <- file(description = expression_tsv, open = "r")
+  on.exit(expr = close(con = connection), add = TRUE)
+
+  header_line <- readLines(
+    con = connection,
+    n = 1L,
+    warn = FALSE
   )
 
-  column_names <- names(header_tbl)
+  if (length(header_line) == 0L || is.na(header_line[[1L]])) {
+    stop(
+      stringr::str_c(
+        "Expression TSV does not contain a readable header: ",
+        expression_tsv
+      ),
+      call. = FALSE
+    )
+  }
+
+  column_names <- strsplit(
+    x = header_line[[1L]],
+    split = "\t",
+    fixed = TRUE
+  )[[1L]]
+
+  column_names <- stringr::str_replace_all(
+    string = column_names,
+    pattern = '^["\']|["\']$',
+    replacement = ""
+  )
 
   gene_id_candidates <- column_names[
     stringr::str_detect(

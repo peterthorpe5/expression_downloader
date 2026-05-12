@@ -12,6 +12,9 @@ RETRIES="2"
 MAX_EXPERIMENTS_PER_SPECIES="0"
 DISCOVERY_BACKEND="ftp_scan"
 FTP_SCAN_MAX_ACCESSIONS="0"
+INCLUDE_OPTIONAL_EXTRAS="false"
+EXPRESSION_FILE_TYPES="tpms,fpkms"
+DOWNLOAD_FILE_TYPES="tpms,fpkms,sample_metadata,analysis_methods,r_object"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -37,6 +40,12 @@ while [[ $# -gt 0 ]]; do
     --discovery_backend) DISCOVERY_BACKEND="$2"; shift 2 ;;
     --ftp_scan_max_accessions=*) FTP_SCAN_MAX_ACCESSIONS="${1#*=}"; shift ;;
     --ftp_scan_max_accessions) FTP_SCAN_MAX_ACCESSIONS="$2"; shift 2 ;;
+    --include_optional_extras=*) INCLUDE_OPTIONAL_EXTRAS="${1#*=}"; shift ;;
+    --include_optional_extras) INCLUDE_OPTIONAL_EXTRAS="$2"; shift 2 ;;
+    --expression_file_types=*) EXPRESSION_FILE_TYPES="${1#*=}"; shift ;;
+    --expression_file_types) EXPRESSION_FILE_TYPES="$2"; shift 2 ;;
+    --download_file_types=*) DOWNLOAD_FILE_TYPES="${1#*=}"; shift ;;
+    --download_file_types) DOWNLOAD_FILE_TYPES="$2"; shift 2 ;;
     *) echo "Unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -53,7 +62,10 @@ PKG_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
   --retries "${RETRIES}" \
   --max_experiments_per_species "${MAX_EXPERIMENTS_PER_SPECIES}" \
   --discovery_backend "${DISCOVERY_BACKEND}" \
-  --ftp_scan_max_accessions "${FTP_SCAN_MAX_ACCESSIONS}"
+  --ftp_scan_max_accessions "${FTP_SCAN_MAX_ACCESSIONS}" \
+  --expression_file_types "${EXPRESSION_FILE_TYPES}" \
+  --download_file_types "${DOWNLOAD_FILE_TYPES}" \
+  --include_optional_extras "${INCLUDE_OPTIONAL_EXTRAS}"
 
 DOWNLOADED_MANIFEST="${OUTPUT_DIR}/manifests/atlas_downloaded_files.tsv"
 

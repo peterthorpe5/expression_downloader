@@ -178,6 +178,26 @@ class TestFtpFilenameDiscovery(unittest.TestCase):
         self.assertIn("E-MTAB-4342-query-results.tpms.tsv", names)
         self.assertNotIn("E-MTAB-4342-tpms.tsv", names)
 
+    def test_optional_files_are_not_misclassified_as_expression_matrices(self):
+        """Marker/coexpression/bedGraph extras should not be imported as TPM/FPKM matrices."""
+
+        self.assertEqual(
+            MODULE.detect_atlas_file_type("E-CURD-31-fpkms-markers.tsv"),
+            "fpkms_markers",
+        )
+        self.assertEqual(
+            MODULE.detect_atlas_file_type("E-CURD-31-tpms-coexpressions.tsv.gz"),
+            "tpms_coexpressions",
+        )
+        self.assertEqual(
+            MODULE.detect_atlas_file_type("E-CURD-31.g1.genes.expressions_fpkms.bedGraph"),
+            "fpkms_bedgraph",
+        )
+        self.assertEqual(
+            MODULE.detect_atlas_file_type("E-CURD-31-tpms.tsv"),
+            "tpms",
+        )
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

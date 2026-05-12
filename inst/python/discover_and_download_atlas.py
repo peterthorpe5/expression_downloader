@@ -49,6 +49,16 @@ DEFAULT_DOWNLOAD_TYPES = (
     "analysis_methods",
     "r_object",
 )
+DEFAULT_OPTIONAL_EXTRA_TYPES = (
+    "transcript_tpms",
+    "tpms_markers",
+    "fpkms_markers",
+    "tpms_coexpressions",
+    "fpkms_coexpressions",
+    "tpms_bedgraph",
+    "fpkms_bedgraph",
+    "heatmap_pdf",
+)
 DEFAULT_FTP_INDEX_URL = (
     "https://ftp.ebi.ac.uk/pub/databases/microarray/data/atlas/experiments/"
 )
@@ -453,11 +463,11 @@ def extract_href_values(html_text: str) -> list[str]:
 def detect_atlas_file_type(file_name: str) -> Optional[str]:
     """Infer the Expression Atlas file type from a filename.
 
-    Expression Atlas filenames are not fully standard across releases. Some
-    baseline RNA-seq experiments use names such as
-    ``E-MTAB-4342-query-results.tpms.tsv`` rather than
-    ``E-MTAB-4342-tpms.tsv``. This helper therefore detects file types from
-    filename content rather than relying on one exact template.
+    Expression Atlas filenames are not fully standard across releases. This
+    helper deliberately separates true gene-level expression matrices from
+    optional extras such as marker files, coexpression files, bedGraph tracks
+    and heatmap PDFs. This prevents optional files being mislabelled as TPM or
+    FPKM matrices and then passed into the R/duckplyr Parquet import step.
 
     Parameters
     ----------
@@ -473,15 +483,6 @@ def detect_atlas_file_type(file_name: str) -> Optional[str]:
 
     lower_name = file_name.lower()
 
-    if "transcript" in lower_name and "tpm" in lower_name:
-        return "transcript_tpms"
-
-    if "fpkm" in lower_name:
-        return "fpkms"
-
-    if "tpm" in lower_name:
-        return "tpms"
-
     if "sdrf" in lower_name or "experiment-design" in lower_name:
         return "sample_metadata"
 
@@ -490,6 +491,41 @@ def detect_atlas_file_type(file_name: str) -> Optional[str]:
 
     if "atlasexperimentsummary" in lower_name and lower_name.endswith(".rdata"):
         return "r_object"
+
+    if "heatmap" in lower_name and lower_name.endswith(".pdf"):
+        return "heatmap_pdf"
+
+    if "coexpression" in lower_name:
+        if "fpkm" in lower_name:
+            return "fpkms_coexpressions"
+        if "tpm" in lower_name:
+            return "tpms_coexpressions"
+        return None
+
+    if "marker" in lower_name:
+        if "fpkm" in lower_name:
+            return "fpkms_markers"
+        if "tpm" in lower_name:
+            return "tpms_markers"
+        return None
+
+    if lower_name.endswith(".bedgraph"):
+        if "fpkm" in lower_name:
+            return "fpkms_bedgraph"
+        if "tpm" in lower_name:
+            return "tpms_bedgraph"
+        return None
+
+    if "transcript" in lower_name and "tpm" in lower_name and lower_name.endswith((".tsv", ".tsv.gz")):
+        return "transcript_tpms"
+
+    # True gene-level matrix files. These are the only file types imported
+    # into long Parquet by the R layer.
+    if lower_name.endswith((".tpms.tsv", "-tpms.tsv", ".tpms.tsv.gz", "-tpms.tsv.gz")):
+        return "tpms"
+
+    if lower_name.endswith((".fpkms.tsv", "-fpkms.tsv", ".fpkms.tsv.gz", "-fpkms.tsv.gz")):
+        return "fpkms"
 
     return None
 
@@ -1137,6 +1173,7 @@ def build_remote_files(
         "sample_metadata": [f"{accession}.condensed-sdrf.tsv"],
         "analysis_methods": [f"{accession}-analysis-methods.tsv"],
         "r_object": [f"{accession}-atlasExperimentSummary.Rdata"],
+        "transcript_tpms": [f"{accession}-transcript_tpms.tsv"],
     }
 
     actual_names = decode_remote_file_names(
@@ -1334,6 +1371,15 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--search_terms", default=",".join(DEFAULT_SEARCH_TERMS))
     parser.add_argument("--expression_file_types", default=",".join(DEFAULT_EXPRESSION_TYPES))
     parser.add_argument("--download_file_types", default=",".join(DEFAULT_DOWNLOAD_TYPES))
+    parser.add_argument(
+        "--include_optional_extras",
+        default="false",
+        help=(
+            "When true, also download optional Atlas extras such as marker, "
+            "coexpression, bedGraph and heatmap files. These files are kept "
+            "but are not imported as expression matrices."
+        ),
+    )
     parser.add_argument("--force_download", default="false")
     parser.add_argument("--timeout_seconds", type=int, default=30)
     parser.add_argument("--retries", type=int, default=2)
@@ -1364,6 +1410,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     search_terms = parse_csv_option(args.search_terms, DEFAULT_SEARCH_TERMS)
     expression_file_types = parse_csv_option(args.expression_file_types, DEFAULT_EXPRESSION_TYPES)
     download_file_types = parse_csv_option(args.download_file_types, DEFAULT_DOWNLOAD_TYPES)
+    include_optional_extras = parse_bool(args.include_optional_extras, default=False)
+    if include_optional_extras:
+        download_file_types = tuple(
+            dict.fromkeys(download_file_types + DEFAULT_OPTIONAL_EXTRA_TYPES)
+        )
     force_download = parse_bool(args.force_download, default=False)
 
     manifest_dir.mkdir(parents=True, exist_ok=True)
