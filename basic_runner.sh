@@ -6,23 +6,24 @@ set -euo pipefail
 
 cd ~/data/2026_E3_protac/expression_downloader
 
-Rscript inst/scripts/00_install_dependencies.R
+#Rscript inst/scripts/00_install_dependencies.R
 
-R CMD INSTALL .
+#R CMD INSTALL .
 
 
-Rscript inst/scripts/run_all.R \
+
+./inst/scripts/run_python_first_then_r.sh \
   --species_file=data/species.txt \
   --override_tsv=data/species_overrides.tsv \
-  --output_dir=../analysis/expression_atlas_v016 \
+  --output_dir=../analysis/expression_atlas_ftp_full \
   --force_download=false \
   --force_import=false \
   --create_duckdb=true \
-  --search_backend=arrayexpress_api \
-  --experiment_type_filter='rna|sequencing' \
-  --atlas_search_terms='RNA-seq,RNA sequencing,transcriptome,baseline' \
-  --require_expression_matrix=true \
-  --expression_file_types=tpms,fpkms
+  --timeout_seconds=30 \
+  --retries=2 \
+  --include_optional_extras=false
+
+
 
 
 
