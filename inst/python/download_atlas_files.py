@@ -358,6 +358,25 @@ def download_if_needed(
     return DownloadStatus(action="download_failed", success=False, local_bytes=None)
 
 
+
+def parse_bool(value: object) -> bool:
+    """Parse common string and boolean values safely.
+
+    Args:
+        value: Value to parse.
+
+    Returns:
+        Parsed boolean value.
+    """
+
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    text = str(value).strip().lower()
+    return text in {"true", "t", "yes", "y", "1"}
+
+
 def parse_expression_file_types(*, expression_file_types: str) -> List[str]:
     """Parse a comma-separated expression file type list.
 
@@ -414,8 +433,8 @@ def select_rows_for_download(
         experiment_key(row=row)
         for row in checked_rows
         if str(row.get("file_type", "")).lower() in expression_file_types
-        and bool(row.get("remote_exists"))
-        and bool(row.get("remote_non_empty"))
+        and parse_bool(row.get("remote_exists"))
+        and parse_bool(row.get("remote_non_empty"))
     }
 
     return [row for row in checked_rows if experiment_key(row=row) in selected_keys]
@@ -441,7 +460,7 @@ def build_expression_availability_rows(
         file_type = str(row.get("file_type", "")).lower()
         if file_type not in expression_file_types:
             continue
-        if not bool(row.get("remote_exists")) or not bool(row.get("remote_non_empty")):
+        if not parse_bool(row.get("remote_exists")) or not parse_bool(row.get("remote_non_empty")):
             continue
 
         key = experiment_key(row=row)
@@ -518,8 +537,8 @@ def main() -> int:
         print(f"[{index}/{len(selected_rows)}] Downloading/checking local {url}", file=sys.stderr)
 
         remote_status = RemoteStatus(
-            remote_exists=bool(row.get("remote_exists")),
-            remote_non_empty=bool(row.get("remote_non_empty")),
+            remote_exists=parse_bool(row.get("remote_exists")),
+            remote_non_empty=parse_bool(row.get("remote_non_empty")),
             status_code=int(row["status_code"]) if str(row.get("status_code", "")) else None,
             remote_bytes=int(row["remote_bytes"]) if str(row.get("remote_bytes", "")) else None,
             check_method=str(row.get("check_method", "prechecked")),

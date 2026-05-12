@@ -32,6 +32,24 @@ expression_file_types <- parse_expression_file_types(
   )
 )
 
+search_terms <- parse_expression_file_types(
+  expression_file_types = get_cli_arg(
+    parsed_args = args,
+    name = "atlas_search_terms",
+    default = "RNA-seq,RNA sequencing,transcriptome,baseline"
+  )
+)
+search_backend <- get_cli_arg(
+  parsed_args = args,
+  name = "search_backend",
+  default = "arrayexpress_api"
+)
+experiment_type_filter <- get_cli_arg(
+  parsed_args = args,
+  name = "experiment_type_filter",
+  default = "rna|sequencing"
+)
+
 result <- run_expression_atlas_pipeline(
   species_file = species_file,
   output_dir = output_dir,
@@ -42,7 +60,10 @@ result <- run_expression_atlas_pipeline(
   create_duckdb = create_duckdb,
   duckdb_path = duckdb_path,
   require_expression_matrix = require_expression_matrix,
-  expression_file_types = expression_file_types
+  expression_file_types = expression_file_types,
+  search_terms = search_terms,
+  search_backend = search_backend,
+  experiment_type_filter = experiment_type_filter
 )
 
 message("Pipeline finished.")

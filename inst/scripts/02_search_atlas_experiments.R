@@ -15,12 +15,35 @@ output_tsv <- get_cli_arg(
   default = "analysis/expression_atlas/manifests/atlas_candidate_experiments.tsv"
 )
 
+atlas_search_terms <- parse_expression_file_types(
+  expression_file_types = get_cli_arg(
+    parsed_args = args,
+    name = "atlas_search_terms",
+    default = "RNA-seq,RNA sequencing,transcriptome,baseline"
+  )
+)
+search_backend <- get_cli_arg(
+  parsed_args = args,
+  name = "search_backend",
+  default = "arrayexpress_api"
+)
+experiment_type_filter <- get_cli_arg(
+  parsed_args = args,
+  name = "experiment_type_filter",
+  default = "rna|sequencing"
+)
+
 species_registry_tbl <- readr::read_tsv(
   file = species_registry_tsv,
   show_col_types = FALSE
 )
 
-searched_tbl <- search_atlas_from_species_registry(species_registry_tbl = species_registry_tbl)
+searched_tbl <- search_atlas_from_species_registry(
+  species_registry_tbl = species_registry_tbl,
+  search_terms = atlas_search_terms,
+  search_backend = search_backend,
+  experiment_type_filter = experiment_type_filter
+)
 manual_tbl <- read_manual_experiments(experiment_tsv = manual_experiment_tsv)
 
 experiment_tbl <- dplyr::bind_rows(searched_tbl, manual_tbl) |>

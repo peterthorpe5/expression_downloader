@@ -15,4 +15,5 @@ dependencies:
   - r-stringr
   - r-tibble
   - r-tidyr
+  - r-xml2
   - r-testthat

@@ -11,6 +11,7 @@ required_packages <- c(
   "stringr",
   "tibble",
   "tidyr",
+  "xml2",
   "testthat"
 )
 
@@ -65,6 +66,7 @@ if (length(missing_required) > 0L) {
           "r-stringr",
           "r-tibble",
           "r-tidyr",
+          "r-xml2",
           "r-testthat",
           "bioconductor-expressionatlas"
         ),

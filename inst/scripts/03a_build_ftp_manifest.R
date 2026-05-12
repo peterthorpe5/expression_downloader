@@ -24,26 +24,37 @@ experiment_tbl <- readr::read_tsv(
   show_col_types = FALSE
 )
 
-ftp_manifest_tbl <- purrr::pmap_dfr(
-  .l = list(
-    experiment_accession = experiment_tbl$experiment_accession,
-    species_column = experiment_tbl$species_column
-  ),
-  .f = function(experiment_accession, species_column) {
-    build_atlas_ftp_manifest(
-      experiment_accession = experiment_accession,
-      species_column = species_column
-    )
-  }
-) |>
-  dplyr::mutate(
-    local_path = file.path(
-      download_dir,
-      .data$species_column,
-      .data$experiment_accession,
-      .data$file_name
-    )
+if (nrow(experiment_tbl) == 0L) {
+  ftp_manifest_tbl <- tibble::tibble(
+    experiment_accession = character(),
+    species_column = character(),
+    file_type = character(),
+    file_name = character(),
+    url = character(),
+    local_path = character()
   )
+} else {
+  ftp_manifest_tbl <- purrr::pmap_dfr(
+    .l = list(
+      experiment_accession = experiment_tbl$experiment_accession,
+      species_column = experiment_tbl$species_column
+    ),
+    .f = function(experiment_accession, species_column) {
+      build_atlas_ftp_manifest(
+        experiment_accession = experiment_accession,
+        species_column = species_column
+      )
+    }
+  ) |>
+    dplyr::mutate(
+      local_path = file.path(
+        download_dir,
+        .data$species_column,
+        .data$experiment_accession,
+        .data$file_name
+      )
+    )
+}
 
 ftp_manifest_tsv <- file.path(manifest_dir, "atlas_ftp_manifest.tsv")
 readr::write_tsv(x = ftp_manifest_tbl, file = ftp_manifest_tsv)

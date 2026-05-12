@@ -7,7 +7,7 @@
 # Preferred cluster setup:
 #   mamba install -c conda-forge -c bioconda r-dplyr r-duckplyr r-duckdb \
 #     r-fs r-httr2 r-purrr r-readr r-rlang r-stringr r-tibble r-tidyr \
-#     r-testthat bioconductor-expressionatlas
+#     r-xml2 r-testthat bioconductor-expressionatlas
 
 options(repos = c(CRAN = "https://cloud.r-project.org"))
 
@@ -22,6 +22,7 @@ cran_packages <- c(
   "stringr",
   "tibble",
   "tidyr",
+  "xml2",
   "testthat"
 )
 

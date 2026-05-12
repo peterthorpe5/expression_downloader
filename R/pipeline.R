@@ -27,7 +27,10 @@ run_expression_atlas_pipeline <- function(
   create_duckdb = TRUE,
   duckdb_path = NULL,
   require_expression_matrix = TRUE,
-  expression_file_types = c("tpms", "fpkms")
+  expression_file_types = c("tpms", "fpkms"),
+  search_terms = c("RNA-seq", "RNA sequencing", "transcriptome", "baseline"),
+  search_backend = "arrayexpress_api",
+  experiment_type_filter = "rna|sequencing"
 ) {
   manifest_dir <- file.path(output_dir, "manifests")
   download_dir <- file.path(output_dir, "downloads")
@@ -49,9 +52,14 @@ run_expression_atlas_pipeline <- function(
     output_tsv = species_registry_tsv
   )
 
+  message("Starting Expression Atlas discovery")
   searched_experiment_tbl <- search_atlas_from_species_registry(
-    species_registry_tbl = species_registry_tbl
+    species_registry_tbl = species_registry_tbl,
+    search_terms = search_terms,
+    search_backend = search_backend,
+    experiment_type_filter = experiment_type_filter
   )
+  message("Expression Atlas discovery returned ", nrow(searched_experiment_tbl), " candidate rows")
 
   manual_experiment_tbl <- read_manual_experiments(
     experiment_tsv = manual_experiment_tsv
@@ -79,7 +87,7 @@ run_expression_atlas_pipeline <- function(
 
   if (nrow(experiment_tbl) == 0L) {
     warning(
-      "No Expression Atlas experiments were found. Consider installing ExpressionAtlas or providing manual_experiment_tsv.",
+      "No Expression Atlas experiments were kept after searching and filtering. Check atlas_candidate_experiments.tsv, species_registry.tsv, and consider using --experiment_type_filter=all or a manual_experiment_tsv.",
       call. = FALSE
     )
 
@@ -116,7 +124,9 @@ run_expression_atlas_pipeline <- function(
   ftp_manifest_tsv <- file.path(manifest_dir, "atlas_ftp_manifest.tsv")
   readr::write_tsv(x = ftp_manifest_tbl, file = ftp_manifest_tsv)
 
+  message("Checking remote availability for ", nrow(ftp_manifest_tbl), " candidate Atlas files")
   checked_manifest_tbl <- check_manifest_remotes(manifest_tbl = ftp_manifest_tbl)
+  message("Remote checking complete: ", sum(checked_manifest_tbl$remote_exists & checked_manifest_tbl$remote_non_empty), " available files")
 
   checked_manifest_tsv <- file.path(
     manifest_dir,
@@ -159,6 +169,8 @@ run_expression_atlas_pipeline <- function(
     file = selected_checked_manifest_tsv
   )
 
+  message("Selected ", nrow(selected_checked_manifest_tbl), " files from experiments with expression matrices")
+
   download_log_tbl <- download_checked_manifest(
     checked_manifest_tbl = selected_checked_manifest_tbl,
     force = force_download
@@ -194,6 +206,8 @@ run_expression_atlas_pipeline <- function(
     x = downloaded_files_tbl,
     file = downloaded_files_tsv
   )
+
+  message("Downloaded files available for import: ", nrow(downloaded_files_tbl))
 
   import_summary_tbl <- import_expression_files_to_parquet(
     atlas_files_tbl = downloaded_files_tbl,

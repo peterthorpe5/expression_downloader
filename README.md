@@ -78,6 +78,7 @@ mamba install -c conda-forge -c bioconda \
   r-stringr \
   r-tibble \
   r-tidyr \
+  r-xml2 \
   r-testthat \
   bioconductor-expressionatlas
 ```
