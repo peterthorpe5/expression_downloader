@@ -11,7 +11,7 @@ duckdb_path <- get_cli_arg(
 )
 
 parquet_dir <- file.path(output_dir, "parquet")
-expression_glob <- file.path(parquet_dir, "atlas_expression_long", "**", "*.parquet")
+expression_glob <- build_expression_parquet_glob(parquet_dir = parquet_dir)
 alias_glob <- file.path(parquet_dir, "gene_identifier_aliases", "**", "*.parquet")
 
 alias_glob_for_view <- NULL

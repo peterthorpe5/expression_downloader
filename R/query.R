@@ -1,3 +1,47 @@
+
+
+#' Build the default Parquet glob for the expression dataset.
+#'
+#' Uses the known partition structure written by the importer rather than a
+#' recursive `**` glob. This is more portable across DuckDB, duckplyr and R
+#' versions because some systems treat `**` as a literal pattern.
+#'
+#' @param parquet_dir Directory containing package Parquet outputs.
+#' @return A glob matching all long-expression Parquet files.
+build_expression_parquet_glob <- function(parquet_dir) {
+  return(
+    file.path(
+      parquet_dir,
+      "atlas_expression_long",
+      "species_column=*",
+      "experiment_accession=*",
+      "*.parquet"
+    )
+  )
+}
+
+
+#' Count rows in a Parquet dataset through duckplyr.
+#'
+#' This is a lightweight validation helper for smoke-testing imported Parquet
+#' files and DuckDB views without collecting the full expression table.
+#'
+#' @param parquet_glob Path or glob pointing to Parquet files.
+#' @return Number of rows visible through duckplyr.
+count_parquet_rows_duckplyr <- function(parquet_glob) {
+  parquet_tbl <- duckplyr::read_parquet_duckdb(
+    path = parquet_glob,
+    prudence = "stingy",
+    options = list(hive_partitioning = TRUE)
+  )
+
+  count_tbl <- parquet_tbl |>
+    dplyr::summarise(n_rows = dplyr::n()) |>
+    dplyr::collect()
+
+  return(count_tbl$n_rows[[1L]])
+}
+
 #' Read long expression Parquet files through duckplyr.
 #'
 #' Returns a lazy duckplyr data frame. The full dataset is not collected into R
@@ -152,6 +196,23 @@ materialise_duckdb_views_from_parquet <- function(
       "', hive_partitioning = TRUE)"
     )
   )
+
+  validation_tbl <- duckplyr::read_sql_duckdb(
+    sql = "SELECT COUNT(*) AS n_rows FROM e3_expression.atlas_expression_long",
+    prudence = "stingy"
+  ) |>
+    dplyr::collect()
+
+  if (validation_tbl$n_rows[[1L]] == 0L) {
+    warning(
+      stringr::str_c(
+        "DuckDB view atlas_expression_long was created but returned zero rows. ",
+        "Check the Parquet glob: ",
+        expression_parquet_glob
+      ),
+      call. = FALSE
+    )
+  }
 
   if (!is.null(alias_parquet_glob)) {
     safe_alias_glob <- normalise_sql_path(
