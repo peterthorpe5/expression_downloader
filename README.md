@@ -11,6 +11,7 @@ It is designed for the current project situation:
 - by default, only experiments with downloadable TPM/FPKM expression matrices are selected, so metadata-only and most microarray-only hits are ignored;
 - existing local non-empty files are skipped;
 - large expression matrices are converted to long Parquet with a streaming Python/pyarrow importer by default;
+- SDRF/condensed-SDRF sample metadata are imported as separate long and wide Parquet datasets;
 - future Shiny queries can use lazy `duckplyr` tables rather than loading expression data into memory;
 - gene/protein identifier aliases are kept in a separate table so different naming systems can be joined later.
 
@@ -44,6 +45,7 @@ analysis/expression_atlas/
     atlas_download_log.tsv
     atlas_downloaded_files.tsv
     atlas_expression_import_summary.tsv
+    atlas_sample_metadata_import_summary.tsv
     gene_identifier_aliases.tsv
   downloads/
     <species>/<experiment_accession>/...
@@ -51,6 +53,10 @@ analysis/expression_atlas/
     atlas_expression_long/
       species_column=<species>/experiment_accession=<experiment>/tpms.parquet
       species_column=<species>/experiment_accession=<experiment>/fpkms.parquet
+    atlas_sample_metadata_long/
+      species_column=<species>/experiment_accession=<experiment>/sample_metadata.parquet
+    atlas_sample_metadata_wide/
+      species_column=<species>/experiment_accession=<experiment>/sample_metadata.parquet
     gene_identifier_aliases/
       gene_identifier_aliases.parquet
   e3_expression.duckdb
@@ -173,7 +179,8 @@ This will:
 6. select only experiments with downloadable TPM/FPKM matrices by default;
 7. download available files for selected experiments, including matching SDRF and methods metadata;
 8. normalise TPM/FPKM matrices to long Parquet with the Python streaming importer;
-9. create a DuckDB database with views over the Parquet files.
+9. import SDRF/condensed-SDRF sample metadata into long and wide Parquet datasets;
+10. create a DuckDB database with views over the Parquet files.
 
 
 ### Reimport existing downloads with the Python importer
@@ -464,3 +471,64 @@ Quick command from the package root:
 ## v0.2.1 note
 
 The Python-first downloader now uses an FTP-scan discovery backend by default. This avoids brittle Expression Atlas / ArrayExpress XML searches by listing Expression Atlas experiment directories from the public FTP index, checking for real TPM/FPKM matrices, and then matching experiments back to the requested species using SDRF metadata where available.
+
+
+## v0.3.1 notes
+
+This version keeps the project broad across the tree of life: the pipeline imports expression data for any species listed in `data/species.txt`, not just plants. Plant-focused resources can be added later as separate source modules, but this package now treats Expression Atlas as the first cross-species expression source.
+
+New in v0.3.1:
+
+- Python/pyarrow remains the default expression importer.
+- Long expression rows now include `source_database`, currently `ExpressionAtlas`.
+- SDRF and condensed-SDRF files are imported into:
+  - `atlas_sample_metadata_long`
+  - `atlas_sample_metadata_wide`
+- DuckDB views are created for:
+  - `atlas_expression_long`
+  - `atlas_expression_tpm`
+  - `atlas_expression_fpkm`
+  - `atlas_sample_metadata_long`
+  - `atlas_sample_metadata_wide`
+  - `atlas_expression_with_sample_metadata` when wide metadata are available.
+- The joined view allows future Shiny filters on species, experiment, expression unit, tissue/organism part, developmental stage, genotype, treatment and condition where Atlas metadata provide those fields.
+
+To rebuild metadata only from existing downloads:
+
+```bash
+./inst/scripts/05_python_import_sample_metadata_to_parquet.sh \
+  --downloaded_files_tsv=../analysis/expression_atlas_ftp_full/manifests/atlas_downloaded_files.tsv \
+  --output_dir=../analysis/expression_atlas_ftp_full \
+  --force_import=true
+
+Rscript inst/scripts/06_create_duckdb_views.R \
+  --output_dir=../analysis/expression_atlas_ftp_full \
+  --duckdb_path=../analysis/expression_atlas_ftp_full/e3_expression.duckdb
+```
+
+Example metadata-aware query:
+
+```r
+library(duckplyr)
+library(dplyr)
+
+expr_meta <- E3AtlasDuckplyr::read_expression_with_sample_metadata_duckplyr(
+  duckdb_path = "../analysis/expression_atlas_ftp_full/e3_expression.duckdb"
+)
+
+expr_meta |>
+  filter(species_column == "Zea_mays") |>
+  filter(expression_unit == "TPM") |>
+  filter(expression_value >= 1) |>
+  select(
+    experiment_accession,
+    gene_id,
+    sample_or_condition,
+    organism_part,
+    developmental_stage,
+    treatment,
+    expression_value
+  ) |>
+  head(20) |>
+  collect()
+```

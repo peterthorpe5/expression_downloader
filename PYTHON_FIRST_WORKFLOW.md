@@ -101,3 +101,27 @@ data/species.txt
 
 Then rerun the same command with `--force_download=false`. Existing non-empty
 files will be skipped.
+
+## v0.3.1 metadata layer
+
+The Python-first workflow now imports two data layers from existing downloads:
+
+1. TPM/FPKM expression matrices, written to `parquet/atlas_expression_long/`.
+2. SDRF/condensed-SDRF metadata, written to `parquet/atlas_sample_metadata_long/` and `parquet/atlas_sample_metadata_wide/`.
+
+The full wrapper runs both importers automatically. To rebuild only metadata from existing downloads:
+
+```bash
+./inst/scripts/05_python_import_sample_metadata_to_parquet.sh \
+  --downloaded_files_tsv=../analysis/expression_atlas_ftp_full/manifests/atlas_downloaded_files.tsv \
+  --output_dir=../analysis/expression_atlas_ftp_full \
+  --force_import=true
+```
+
+Then recreate the DuckDB views:
+
+```bash
+Rscript inst/scripts/06_create_duckdb_views.R \
+  --output_dir=../analysis/expression_atlas_ftp_full \
+  --duckdb_path=../analysis/expression_atlas_ftp_full/e3_expression.duckdb
+```

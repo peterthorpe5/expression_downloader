@@ -62,6 +62,7 @@ class MatrixJob:
     species_column: str
     expression_unit: str
     file_type: str
+    source_database: str = "ExpressionAtlas"
 
 
 @dataclass(frozen=True)
@@ -302,6 +303,7 @@ def build_schema() -> pa.Schema:
 
     return pa.schema(
         [
+            pa.field("source_database", pa.string()),
             pa.field("experiment_accession", pa.string()),
             pa.field("species_column", pa.string()),
             pa.field("gene_id", pa.string()),
@@ -404,6 +406,7 @@ def iter_matrix_records(
 
                 yield (
                     {
+                        "source_database": job.source_database,
                         "experiment_accession": job.experiment_accession,
                         "species_column": job.species_column,
                         "gene_id": gene_id,
@@ -633,6 +636,7 @@ def build_jobs(
 
         species_column = (row.get("species_column") or "").strip()
         experiment_accession = (row.get("experiment_accession") or "").strip()
+        source_database = (row.get("source_database") or "ExpressionAtlas").strip()
         local_path = Path((row.get("local_path") or "").strip())
 
         if not species_column or not experiment_accession or not str(local_path):
@@ -655,6 +659,7 @@ def build_jobs(
                 species_column=species_column,
                 expression_unit=EXPRESSION_TYPES[file_type],
                 file_type=file_type,
+                source_database=source_database,
             )
         )
 

@@ -83,4 +83,26 @@ if (length(missing_optional) > 0L) {
   message("ExpressionAtlas is optional only if you supply manual experiment accessions.")
 }
 
+
+python_status <- system2(
+  command = "python",
+  args = c("-c", "import pyarrow; print(pyarrow.__version__)"),
+  stdout = TRUE,
+  stderr = TRUE
+)
+python_ok <- attr(python_status, "status")
+if (is.null(python_ok)) {
+  python_ok <- 0L
+}
+
+message("\nPython pyarrow status:")
+if (identical(python_ok, 0L)) {
+  message("pyarrow installed: ", paste(python_status, collapse = " "))
+} else {
+  message("pyarrow is missing or Python could not import it.")
+  message("Suggested conda/mamba install:")
+  message("mamba install -c conda-forge pyarrow")
+  quit(status = 1L)
+}
+
 message("\nDependency check finished.")

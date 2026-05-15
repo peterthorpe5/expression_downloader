@@ -100,6 +100,14 @@ else
     --force_import="${FORCE_IMPORT}"
 fi
 
+# Import SDRF/condensed-SDRF metadata as a separate Parquet module.
+# This preserves tissue, condition and other sample descriptors for later
+# duckplyr/Shiny joins without loading the expression matrix into memory.
+"${SCRIPT_DIR}/05_python_import_sample_metadata_to_parquet.sh" \
+  --downloaded_files_tsv="${DOWNLOADED_MANIFEST}" \
+  --output_dir="${OUTPUT_DIR}" \
+  --force_import="${FORCE_IMPORT}"
+
 if [[ "${CREATE_DUCKDB}" == "true" || "${CREATE_DUCKDB}" == "TRUE" || "${CREATE_DUCKDB}" == "1" ]]; then
   Rscript "${SCRIPT_DIR}/06_create_duckdb_views.R" \
     --output_dir="${OUTPUT_DIR}" \

@@ -21,6 +21,41 @@ build_expression_parquet_glob <- function(parquet_dir) {
 }
 
 
+
+
+#' Build the default Parquet glob for sample metadata in long format.
+#'
+#' @param parquet_dir Directory containing package Parquet outputs.
+#' @return A glob matching long sample metadata Parquet files.
+build_sample_metadata_long_parquet_glob <- function(parquet_dir) {
+  return(
+    file.path(
+      parquet_dir,
+      "atlas_sample_metadata_long",
+      "species_column=*",
+      "experiment_accession=*",
+      "*.parquet"
+    )
+  )
+}
+
+
+#' Build the default Parquet glob for sample metadata in wide format.
+#'
+#' @param parquet_dir Directory containing package Parquet outputs.
+#' @return A glob matching wide sample metadata Parquet files.
+build_sample_metadata_wide_parquet_glob <- function(parquet_dir) {
+  return(
+    file.path(
+      parquet_dir,
+      "atlas_sample_metadata_wide",
+      "species_column=*",
+      "experiment_accession=*",
+      "*.parquet"
+    )
+  )
+}
+
 #' Count rows in a Parquet dataset through duckplyr.
 #'
 #' This is a lightweight validation helper for smoke-testing imported Parquet
@@ -170,7 +205,8 @@ materialise_duckdb_views_from_parquet <- function(
   duckdb_path,
   expression_parquet_glob,
   alias_parquet_glob = NULL,
-  sample_parquet_glob = NULL
+  sample_long_parquet_glob = NULL,
+  sample_wide_parquet_glob = NULL
 ) {
   ensure_directory(directory_path = dirname(duckdb_path))
 
@@ -194,6 +230,22 @@ materialise_duckdb_views_from_parquet <- function(
       "SELECT * FROM read_parquet('",
       safe_expression_glob,
       "', hive_partitioning = TRUE)"
+    )
+  )
+
+  duckplyr::db_exec(
+    sql = paste(
+      "CREATE OR REPLACE VIEW e3_expression.atlas_expression_tpm AS",
+      "SELECT * FROM e3_expression.atlas_expression_long",
+      "WHERE expression_unit = 'TPM'"
+    )
+  )
+
+  duckplyr::db_exec(
+    sql = paste(
+      "CREATE OR REPLACE VIEW e3_expression.atlas_expression_fpkm AS",
+      "SELECT * FROM e3_expression.atlas_expression_long",
+      "WHERE expression_unit = 'FPKM'"
     )
   )
 
@@ -230,18 +282,49 @@ materialise_duckdb_views_from_parquet <- function(
     )
   }
 
-  if (!is.null(sample_parquet_glob)) {
-    safe_sample_glob <- normalise_sql_path(
-      file_path = sample_parquet_glob,
+  if (!is.null(sample_long_parquet_glob)) {
+    safe_sample_long_glob <- normalise_sql_path(
+      file_path = sample_long_parquet_glob,
       must_work = FALSE
     )
 
     duckplyr::db_exec(
       sql = stringr::str_c(
-        "CREATE OR REPLACE VIEW e3_expression.atlas_samples AS ",
+        "CREATE OR REPLACE VIEW e3_expression.atlas_sample_metadata_long AS ",
         "SELECT * FROM read_parquet('",
-        safe_sample_glob,
+        safe_sample_long_glob,
         "', hive_partitioning = TRUE)"
+      )
+    )
+  }
+
+  if (!is.null(sample_wide_parquet_glob)) {
+    safe_sample_wide_glob <- normalise_sql_path(
+      file_path = sample_wide_parquet_glob,
+      must_work = FALSE
+    )
+
+    duckplyr::db_exec(
+      sql = stringr::str_c(
+        "CREATE OR REPLACE VIEW e3_expression.atlas_sample_metadata_wide AS ",
+        "SELECT * FROM read_parquet('",
+        safe_sample_wide_glob,
+        "', hive_partitioning = TRUE)"
+      )
+    )
+
+    duckplyr::db_exec(
+      sql = paste(
+        "CREATE OR REPLACE VIEW e3_expression.atlas_expression_with_sample_metadata AS",
+        "SELECT e.*,",
+        "m.organism, m.organism_part, m.developmental_stage,",
+        "m.genotype, m.cultivar, m.treatment, m.condition,",
+        "m.assay_name, m.source_name, m.sample_name",
+        "FROM e3_expression.atlas_expression_long e",
+        "LEFT JOIN e3_expression.atlas_sample_metadata_wide m",
+        "ON e.experiment_accession = m.experiment_accession",
+        "AND e.species_column = m.species_column",
+        "AND e.sample_or_condition = m.sample_or_condition"
       )
     )
   }
@@ -249,4 +332,61 @@ materialise_duckdb_views_from_parquet <- function(
   duckplyr::db_exec(sql = "DETACH e3_expression")
 
   return(invisible(duckdb_path))
+}
+
+
+#' Read sample metadata in wide format through duckplyr.
+#'
+#' @param duckdb_path Path to a DuckDB database file.
+#' @param prudence duckplyr prudence setting.
+#' @return A lazy duckplyr data frame.
+read_sample_metadata_wide_duckplyr <- function(
+  duckdb_path,
+  prudence = "stingy"
+) {
+  return(
+    read_duckdb_table_duckplyr(
+      duckdb_path = duckdb_path,
+      table_name = "atlas_sample_metadata_wide",
+      prudence = prudence
+    )
+  )
+}
+
+
+#' Read expression already joined to sample metadata through duckplyr.
+#'
+#' @param duckdb_path Path to a DuckDB database file.
+#' @param prudence duckplyr prudence setting.
+#' @return A lazy duckplyr data frame.
+read_expression_with_sample_metadata_duckplyr <- function(
+  duckdb_path,
+  prudence = "stingy"
+) {
+  return(
+    read_duckdb_table_duckplyr(
+      duckdb_path = duckdb_path,
+      table_name = "atlas_expression_with_sample_metadata",
+      prudence = prudence
+    )
+  )
+}
+
+
+#' Read the TPM-only expression view through duckplyr.
+#'
+#' @param duckdb_path Path to a DuckDB database file.
+#' @param prudence duckplyr prudence setting.
+#' @return A lazy duckplyr data frame.
+read_expression_tpm_duckplyr <- function(
+  duckdb_path,
+  prudence = "stingy"
+) {
+  return(
+    read_duckdb_table_duckplyr(
+      duckdb_path = duckdb_path,
+      table_name = "atlas_expression_tpm",
+      prudence = prudence
+    )
+  )
 }

@@ -1,7 +1,7 @@
 Package: E3AtlasDuckplyr
 Type: Package
 Title: Duckplyr Expression Atlas Import Utilities for E3 Ligase Resources
-Version: 0.3.0
+Version: 0.3.1
 Authors@R: c(
     person(given = "Pete", family = "Thorpe", role = c("aut", "cre"), email = "p.thorpe@example.org")
     )
@@ -9,8 +9,10 @@ Description: Utilities for building an incremental Expression Atlas import layer
     for an E3 ligase and HOG database. The package keeps a simple species file,
     discovers Expression Atlas experiments, checks remote files before download,
     keeps experiments with downloadable TPM/FPKM matrices by default, downloads
-    only missing non-empty files, normalises expression matrices into
-    long Parquet datasets using a Python streaming importer by default, and exposes lazy query helpers through duckplyr.
+    only missing non-empty files, normalises expression matrices into long
+    Parquet datasets using a Python streaming importer by default, imports
+    SDRF/condensed-SDRF sample metadata into separate Parquet datasets, and
+    exposes lazy query helpers through duckplyr.
 License: MIT + file LICENSE
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
