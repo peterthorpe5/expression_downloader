@@ -8,6 +8,7 @@ dependencies:
   - ca-certificates
   - certifi
   - openssl
+  - pyarrow
   - r-base>=4.3
   - r-dplyr
   - r-duckplyr

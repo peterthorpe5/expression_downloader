@@ -6,6 +6,8 @@ OVERRIDE_TSV="data/species_overrides.tsv"
 OUTPUT_DIR="../analysis/expression_atlas_python"
 FORCE_DOWNLOAD="false"
 FORCE_IMPORT="false"
+IMPORT_BACKEND="python"
+CHUNK_ROWS="250000"
 CREATE_DUCKDB="true"
 TIMEOUT_SECONDS="30"
 RETRIES="2"
@@ -28,6 +30,10 @@ while [[ $# -gt 0 ]]; do
     --force_download) FORCE_DOWNLOAD="$2"; shift 2 ;;
     --force_import=*) FORCE_IMPORT="${1#*=}"; shift ;;
     --force_import) FORCE_IMPORT="$2"; shift 2 ;;
+    --import_backend=*) IMPORT_BACKEND="${1#*=}"; shift ;;
+    --import_backend) IMPORT_BACKEND="$2"; shift 2 ;;
+    --chunk_rows=*) CHUNK_ROWS="${1#*=}"; shift ;;
+    --chunk_rows) CHUNK_ROWS="$2"; shift 2 ;;
     --create_duckdb=*) CREATE_DUCKDB="${1#*=}"; shift ;;
     --create_duckdb) CREATE_DUCKDB="$2"; shift 2 ;;
     --timeout_seconds=*) TIMEOUT_SECONDS="${1#*=}"; shift ;;
@@ -81,10 +87,18 @@ if [[ "${EXPRESSION_DOWNLOAD_COUNT}" -eq 0 ]]; then
   exit 0
 fi
 
-Rscript "${SCRIPT_DIR}/04_import_expression_to_parquet.R" \
-  --downloaded_files_tsv="${DOWNLOADED_MANIFEST}" \
-  --output_dir="${OUTPUT_DIR}" \
-  --force_import="${FORCE_IMPORT}"
+if [[ "${IMPORT_BACKEND}" == "python" ]]; then
+  "${SCRIPT_DIR}/04_python_import_expression_to_parquet.sh" \
+    --downloaded_files_tsv="${DOWNLOADED_MANIFEST}" \
+    --output_dir="${OUTPUT_DIR}" \
+    --force_import="${FORCE_IMPORT}" \
+    --chunk_rows="${CHUNK_ROWS}"
+else
+  Rscript "${SCRIPT_DIR}/04_import_expression_to_parquet.R" \
+    --downloaded_files_tsv="${DOWNLOADED_MANIFEST}" \
+    --output_dir="${OUTPUT_DIR}" \
+    --force_import="${FORCE_IMPORT}"
+fi
 
 if [[ "${CREATE_DUCKDB}" == "true" || "${CREATE_DUCKDB}" == "TRUE" || "${CREATE_DUCKDB}" == "1" ]]; then
   Rscript "${SCRIPT_DIR}/06_create_duckdb_views.R" \

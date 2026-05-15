@@ -10,7 +10,7 @@ It is designed for the current project situation:
 - remote files are checked before download;
 - by default, only experiments with downloadable TPM/FPKM expression matrices are selected, so metadata-only and most microarray-only hits are ignored;
 - existing local non-empty files are skipped;
-- large expression matrices are converted to long Parquet using DuckDB SQL via `duckplyr`;
+- large expression matrices are converted to long Parquet with a streaming Python/pyarrow importer by default;
 - future Shiny queries can use lazy `duckplyr` tables rather than loading expression data into memory;
 - gene/protein identifier aliases are kept in a separate table so different naming systems can be joined later.
 
@@ -22,7 +22,7 @@ No comma-separated output files are produced. Manifests are TSV and large querya
 e3_atlas_duckplyr/
   R/                              Package functions
   inst/scripts/                   Runnable R and shell scripts
-  inst/python/                    Optional Python download helper
+  inst/python/                    Python discovery/download and Parquet import helpers
   data/species.txt                Editable species list
   data/species_overrides.tsv      Optional species name/query corrections
   data/manual_experiments_template.tsv
@@ -67,6 +67,7 @@ conda activate Go_analysis2
 
 # mamba is faster, but conda install is also fine if mamba is unavailable.
 mamba install -c conda-forge -c bioconda \
+  pyarrow \
   r-dplyr \
   r-duckplyr \
   r-duckdb \
@@ -90,10 +91,11 @@ mamba env create -f envs/e3_atlas_duckplyr.yml
 conda activate e3_atlas_duckplyr
 ```
 
-Then check the R dependencies:
+Then check the R and Python dependencies:
 
 ```bash
 Rscript inst/scripts/00_check_dependencies.R
+python -c "import pyarrow; print(pyarrow.__version__)"
 ```
 
 The old `inst/scripts/00_install_dependencies.R` script is still present, but conda/mamba is preferred for the cluster. That script now sets `https://cloud.r-project.org` explicitly if it is used, avoiding the CRAN mirror error.
@@ -105,6 +107,7 @@ From inside the unpacked package directory:
 ```bash
 R CMD INSTALL .
 Rscript inst/scripts/08_run_tests.R
+./inst/scripts/09_run_python_tests.sh
 
 # or, equivalently:
 Rscript -e 'library(E3AtlasDuckplyr); testthat::test_dir("tests/testthat")'
@@ -149,14 +152,14 @@ This is useful when Expression Atlas uses an updated or alternative species name
 From inside the unpacked package directory:
 
 ```bash
-Rscript inst/scripts/run_all.R \
+./inst/scripts/run_python_first_then_r.sh \
   --species_file=data/species.txt \
   --override_tsv=data/species_overrides.tsv \
   --output_dir=analysis/expression_atlas \
   --force_download=false \
   --force_import=false \
   --create_duckdb=true \
-  --require_expression_matrix=true \
+  --import_backend=python \
   --expression_file_types=tpms,fpkms
 ```
 
@@ -169,8 +172,26 @@ This will:
 5. skip any local files that already exist and are non-empty;
 6. select only experiments with downloadable TPM/FPKM matrices by default;
 7. download available files for selected experiments, including matching SDRF and methods metadata;
-8. normalise TPM/FPKM matrices to long Parquet;
-8. create a DuckDB database with views over the Parquet files.
+8. normalise TPM/FPKM matrices to long Parquet with the Python streaming importer;
+9. create a DuckDB database with views over the Parquet files.
+
+
+### Reimport existing downloads with the Python importer
+
+If downloads already exist but old Parquet files are empty, do not redownload.
+Rebuild only the Parquet files and DuckDB views:
+
+```bash
+./inst/scripts/04_python_import_expression_to_parquet.sh \
+  --downloaded_files_tsv=../analysis/expression_atlas_ftp_full/manifests/atlas_downloaded_files.tsv \
+  --output_dir=../analysis/expression_atlas_ftp_full \
+  --force_import=true \
+  --chunk_rows=250000
+
+Rscript inst/scripts/06_create_duckdb_views.R \
+  --output_dir=../analysis/expression_atlas_ftp_full \
+  --duckdb_path=../analysis/expression_atlas_ftp_full/e3_expression.duckdb
+```
 
 ## 5. If ExpressionAtlas searching is not available
 

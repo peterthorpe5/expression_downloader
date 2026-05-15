@@ -9,6 +9,7 @@ conda activate Go_analysis2
 
 # mamba is faster, but conda is also fine if mamba is unavailable.
 mamba install -c conda-forge -c bioconda \
+  pyarrow \
   r-dplyr \
   r-duckplyr \
   r-duckdb \
@@ -45,6 +46,7 @@ conda activate e3_atlas_duckplyr
 
 ```bash
 Rscript inst/scripts/00_check_dependencies.R
+python -c "import pyarrow; print(pyarrow.__version__)"
 ```
 
 ## Install the local package
@@ -73,5 +75,6 @@ Rscript inst/scripts/run_all.R \
 
 ```bash
 R CMD INSTALL .
-Rscript -e 'testthat::test_dir("tests/testthat")'
+Rscript inst/scripts/08_run_tests.R
+./inst/scripts/09_run_python_tests.sh
 ```
