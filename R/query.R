@@ -99,52 +99,60 @@ read_expression_parquet_duckplyr <- function(
 }
 
 
-#' Read a table from a DuckDB database file through duckplyr.
+#' Read a table or view from a DuckDB database file through duckplyr.
 #'
-#' This is the preferred function when the Shiny app is pointed at a materialised
-#' DuckDB database file. It uses duckplyr's lazy DuckDB table reader.
+#' Attaches the DuckDB database explicitly and returns a lazy relation using
+#' `duckplyr::read_sql_duckdb()`. This avoids version-sensitive behaviour in
+#' `duckplyr::read_tbl_duckdb()` where the database-file stem can be interpreted
+#' as a schema name rather than an attached database.
 #'
 #' @param duckdb_path Path to a DuckDB database file.
 #' @param table_name Name of the table or view to read.
-#' @param schema DuckDB schema name.
+#' @param schema DuckDB schema name inside the attached database.
 #' @param prudence duckplyr prudence setting.
+#' @param database_alias Optional alias for the attached database.
 #' @return A lazy duckplyr data frame.
 read_duckdb_table_duckplyr <- function(
   duckdb_path,
   table_name,
   schema = "main",
-  prudence = "stingy"
+  prudence = "stingy",
+  database_alias = NULL
 ) {
-  if ("read_tbl_duckdb" %in% getNamespaceExports(ns = "duckplyr")) {
-    duckplyr_tbl <- duckplyr::read_tbl_duckdb(
-      path = duckdb_path,
-      table_name = table_name,
-      schema = schema,
-      prudence = prudence
-    )
+  safe_path <- normalise_sql_path(file_path = duckdb_path, must_work = TRUE)
 
-    return(duckplyr_tbl)
+  if (is.null(database_alias)) {
+    database_alias <- stringr::str_c(
+      "e3_expr_db_",
+      Sys.getpid(),
+      "_",
+      as.integer(stats::runif(n = 1L, min = 100000L, max = 999999L))
+    )
   }
 
-  safe_path <- normalise_sql_path(file_path = duckdb_path, must_work = TRUE)
-  safe_schema <- stringr::str_replace_all(
-    string = schema,
+  safe_alias <- stringr::str_replace_all(
+    string = database_alias,
     pattern = "[^A-Za-z0-9_]",
     replacement = "_"
   )
+  safe_schema <- quote_duckdb_identifier(identifier = schema)
   safe_table <- quote_duckdb_identifier(identifier = table_name)
 
   duckplyr::db_exec(
     sql = stringr::str_c(
       "ATTACH DATABASE '",
       safe_path,
-      "' AS e3_expr_db (READ_ONLY)"
+      "' AS ",
+      safe_alias,
+      " (READ_ONLY)"
     )
   )
 
   duckplyr_tbl <- duckplyr::read_sql_duckdb(
     sql = stringr::str_c(
-      "SELECT * FROM e3_expr_db.",
+      "SELECT * FROM ",
+      safe_alias,
+      ".",
       safe_schema,
       ".",
       safe_table

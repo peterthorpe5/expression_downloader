@@ -532,3 +532,13 @@ expr_meta |>
   head(20) |>
   collect()
 ```
+
+
+## v0.3.2 notes
+
+- Fixes a file-descriptor leak in the Python sample metadata importer that could
+  trigger `OSError: [Errno 24] Too many open files` during large imports.
+- Updates script bootstrapping so command-line scripts prefer the local source
+  tree over an older installed package, avoiding missing-function errors after
+  pulling a new patch.
+- The expression Parquet files do not need to be rebuilt for this patch.

@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import csv
 import gzip
+import os
 import re
 import sys
 import tempfile
@@ -166,6 +167,24 @@ def open_text(path: Path):
         return gzip.open(path, mode="rt", encoding="utf-8", newline="")
     return path.open(mode="r", encoding="utf-8", newline="")
 
+
+
+
+def make_closed_temp_path(parent_dir: Path, suffix: str) -> Path:
+    """Create a temporary path and immediately close the file descriptor.
+
+    ``tempfile.mkstemp()`` returns an open file descriptor. If that descriptor
+    is not closed, long metadata imports can hit the operating-system open-file
+    limit after hundreds of experiments. This helper keeps the robust unique
+    temporary-path behaviour while avoiding descriptor leaks.
+    """
+
+    file_descriptor, temporary_name = tempfile.mkstemp(
+        suffix=suffix,
+        dir=str(parent_dir),
+    )
+    os.close(file_descriptor)
+    return Path(temporary_name)
 
 def normalise_header(value: str) -> str:
     """Normalise a metadata header for matching."""
@@ -395,8 +414,14 @@ def write_partitioned_metadata(job: MetadataJob, output_dir: Path, force: bool) 
 
     wide_path.parent.mkdir(parents=True, exist_ok=True)
     long_path.parent.mkdir(parents=True, exist_ok=True)
-    wide_temp = Path(tempfile.mkstemp(suffix=".wide.parquet.partial", dir=str(wide_path.parent))[1])
-    long_temp = Path(tempfile.mkstemp(suffix=".long.parquet.partial", dir=str(long_path.parent))[1])
+    wide_temp = make_closed_temp_path(
+        parent_dir=wide_path.parent,
+        suffix=".wide.parquet.partial",
+    )
+    long_temp = make_closed_temp_path(
+        parent_dir=long_path.parent,
+        suffix=".long.parquet.partial",
+    )
 
     wide_writer: Optional[pq.ParquetWriter] = None
     long_writer: Optional[pq.ParquetWriter] = None

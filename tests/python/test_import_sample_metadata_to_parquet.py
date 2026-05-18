@@ -91,6 +91,21 @@ class ImportSampleMetadataToParquetTests(unittest.TestCase):
         self.assertEqual(len(jobs), 1)
         self.assertEqual(jobs[0].experiment_accession, "E-TEST-1")
 
+
+    def test_make_closed_temp_path_is_writable_after_creation(self) -> None:
+        """Temporary Parquet paths should not keep leaked descriptors open."""
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            created_paths = [
+                metadata_importer.make_closed_temp_path(tmp, ".parquet.partial")
+                for _ in range(25)
+            ]
+
+            for created_path in created_paths:
+                created_path.write_text("ok", encoding="utf-8")
+                self.assertTrue(created_path.exists())
+
     @unittest.skipIf(metadata_importer.pa is None, "pyarrow is not installed")
     def test_metadata_import_writes_rows(self) -> None:
         """A small metadata TSV should produce wide and long Parquet rows."""
