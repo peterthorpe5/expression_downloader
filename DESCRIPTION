@@ -1,7 +1,7 @@
 Package: E3AtlasDuckplyr
 Type: Package
 Title: Duckplyr Expression Atlas Import Utilities for E3 Ligase Resources
-Version: 0.3.3
+Version: 0.3.5
 Authors@R: c(
     person(given = "Pete", family = "Thorpe", role = c("aut", "cre"), email = "p.thorpe@example.org")
     )
@@ -12,8 +12,9 @@ Description: Utilities for building an incremental Expression Atlas import layer
     only missing non-empty files, normalises expression matrices into long
     Parquet datasets using a Python streaming importer by default, imports
     SDRF/condensed-SDRF sample metadata into separate Parquet datasets, and
-    exposes lazy query helpers through duckplyr. Version 0.3.3 fixes
-    DuckDB query helper compatibility with current duckplyr schema semantics.
+    exposes lazy query helpers through duckplyr. Version 0.3.5 improves sample metadata joins by preferring
+    condensed SDRF files, collapsing duplicate metadata records, and excluding
+    blank sample labels from joinable metadata views.
 License: MIT + file LICENSE
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)

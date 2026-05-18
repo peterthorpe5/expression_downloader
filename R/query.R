@@ -198,16 +198,23 @@ filter_expression_duckplyr <- function(
 }
 
 
+
 #' Materialise a DuckDB database from Parquet datasets.
 #'
 #' Creates a DuckDB database file with views pointing at the Parquet datasets.
 #' The views use absolute Parquet paths so the database can be opened from a
-#' Shiny app without loading all data into memory.
+#' Shiny app without loading all data into memory. Dependent views are written
+#' directly against the Parquet datasets rather than against database-qualified
+#' view names. This avoids stale attached-database aliases such as
+#' `e3_expression.atlas_expression_long` being stored inside the view
+#' definition and later failing when the database is attached under a different
+#' alias.
 #'
 #' @param duckdb_path Path to the DuckDB database file to create or update.
 #' @param expression_parquet_glob Glob pointing to expression Parquet files.
 #' @param alias_parquet_glob Optional glob pointing to alias Parquet files.
-#' @param sample_parquet_glob Optional glob pointing to sample metadata Parquet files.
+#' @param sample_long_parquet_glob Optional glob pointing to long sample metadata Parquet files.
+#' @param sample_wide_parquet_glob Optional glob pointing to wide sample metadata Parquet files.
 #' @return Invisibly returns the DuckDB path.
 materialise_duckdb_views_from_parquet <- function(
   duckdb_path,
@@ -224,6 +231,12 @@ materialise_duckdb_views_from_parquet <- function(
     must_work = FALSE
   )
 
+  expression_dataset_sql <- stringr::str_c(
+    "read_parquet('",
+    safe_expression_glob,
+    "', hive_partitioning = TRUE)"
+  )
+
   duckplyr::db_exec(
     sql = stringr::str_c(
       "ATTACH DATABASE '",
@@ -235,25 +248,26 @@ materialise_duckdb_views_from_parquet <- function(
   duckplyr::db_exec(
     sql = stringr::str_c(
       "CREATE OR REPLACE VIEW e3_expression.atlas_expression_long AS ",
-      "SELECT * FROM read_parquet('",
-      safe_expression_glob,
-      "', hive_partitioning = TRUE)"
+      "SELECT * FROM ",
+      expression_dataset_sql
     )
   )
 
   duckplyr::db_exec(
-    sql = paste(
-      "CREATE OR REPLACE VIEW e3_expression.atlas_expression_tpm AS",
-      "SELECT * FROM e3_expression.atlas_expression_long",
-      "WHERE expression_unit = 'TPM'"
+    sql = stringr::str_c(
+      "CREATE OR REPLACE VIEW e3_expression.atlas_expression_tpm AS ",
+      "SELECT * FROM ",
+      expression_dataset_sql,
+      " WHERE expression_unit = 'TPM'"
     )
   )
 
   duckplyr::db_exec(
-    sql = paste(
-      "CREATE OR REPLACE VIEW e3_expression.atlas_expression_fpkm AS",
-      "SELECT * FROM e3_expression.atlas_expression_long",
-      "WHERE expression_unit = 'FPKM'"
+    sql = stringr::str_c(
+      "CREATE OR REPLACE VIEW e3_expression.atlas_expression_fpkm AS ",
+      "SELECT * FROM ",
+      expression_dataset_sql,
+      " WHERE expression_unit = 'FPKM'"
     )
   )
 
@@ -296,12 +310,17 @@ materialise_duckdb_views_from_parquet <- function(
       must_work = FALSE
     )
 
+    sample_long_dataset_sql <- stringr::str_c(
+      "read_parquet('",
+      safe_sample_long_glob,
+      "', hive_partitioning = TRUE)"
+    )
+
     duckplyr::db_exec(
       sql = stringr::str_c(
         "CREATE OR REPLACE VIEW e3_expression.atlas_sample_metadata_long AS ",
-        "SELECT * FROM read_parquet('",
-        safe_sample_long_glob,
-        "', hive_partitioning = TRUE)"
+        "SELECT * FROM ",
+        sample_long_dataset_sql
       )
     )
   }
@@ -312,26 +331,48 @@ materialise_duckdb_views_from_parquet <- function(
       must_work = FALSE
     )
 
+    sample_wide_dataset_sql <- stringr::str_c(
+      "read_parquet('",
+      safe_sample_wide_glob,
+      "', hive_partitioning = TRUE)"
+    )
+
+    sample_wide_joinable_sql <- stringr::str_c(
+      "(SELECT * FROM ",
+      sample_wide_dataset_sql,
+      " WHERE sample_or_condition IS NOT NULL ",
+      "AND sample_or_condition <> '')"
+    )
+
     duckplyr::db_exec(
       sql = stringr::str_c(
         "CREATE OR REPLACE VIEW e3_expression.atlas_sample_metadata_wide AS ",
-        "SELECT * FROM read_parquet('",
-        safe_sample_wide_glob,
-        "', hive_partitioning = TRUE)"
+        "SELECT * FROM ",
+        sample_wide_dataset_sql
       )
     )
 
     duckplyr::db_exec(
-      sql = paste(
-        "CREATE OR REPLACE VIEW e3_expression.atlas_expression_with_sample_metadata AS",
-        "SELECT e.*,",
-        "m.organism, m.organism_part, m.developmental_stage,",
-        "m.genotype, m.cultivar, m.treatment, m.condition,",
-        "m.assay_name, m.source_name, m.sample_name",
-        "FROM e3_expression.atlas_expression_long e",
-        "LEFT JOIN e3_expression.atlas_sample_metadata_wide m",
-        "ON e.experiment_accession = m.experiment_accession",
-        "AND e.species_column = m.species_column",
+      sql = stringr::str_c(
+        "CREATE OR REPLACE VIEW e3_expression.atlas_sample_metadata_wide_joinable AS ",
+        "SELECT * FROM ",
+        sample_wide_joinable_sql
+      )
+    )
+
+    duckplyr::db_exec(
+      sql = stringr::str_c(
+        "CREATE OR REPLACE VIEW e3_expression.atlas_expression_with_sample_metadata AS ",
+        "SELECT e.*, ",
+        "m.organism, m.organism_part, m.developmental_stage, ",
+        "m.genotype, m.cultivar, m.treatment, m.condition, ",
+        "m.assay_name, m.source_name, m.sample_name ",
+        "FROM ",
+        expression_dataset_sql,
+        " e LEFT JOIN ",
+        sample_wide_joinable_sql,
+        " m ON e.experiment_accession = m.experiment_accession ",
+        "AND e.species_column = m.species_column ",
         "AND e.sample_or_condition = m.sample_or_condition"
       )
     )
@@ -341,7 +382,6 @@ materialise_duckdb_views_from_parquet <- function(
 
   return(invisible(duckdb_path))
 }
-
 
 #' Read sample metadata in wide format through duckplyr.
 #'

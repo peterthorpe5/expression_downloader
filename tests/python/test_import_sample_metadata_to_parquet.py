@@ -92,6 +92,78 @@ class ImportSampleMetadataToParquetTests(unittest.TestCase):
         self.assertEqual(jobs[0].experiment_accession, "E-TEST-1")
 
 
+
+    def test_condensed_sdrf_is_preferred_over_full_sdrf(self) -> None:
+        """Only one preferred metadata file should be used per experiment."""
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            manifest = tmp / "atlas_downloaded_files.tsv"
+            full_sdrf = tmp / "E-TEST-1.sdrf.txt"
+            condensed = tmp / "E-TEST-1.condensed-sdrf.tsv"
+            full_sdrf.write_text("Assay Name\nGSM1\n", encoding="utf-8")
+            condensed.write_text("Assay Group\ng1\n", encoding="utf-8")
+            fieldnames = [
+                "species_column",
+                "experiment_accession",
+                "file_type",
+                "local_path",
+                "success",
+            ]
+            with manifest.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=fieldnames, delimiter="\t")
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "species_column": "Zea_mays",
+                        "experiment_accession": "E-TEST-1",
+                        "file_type": "sample_metadata",
+                        "local_path": str(full_sdrf),
+                        "success": "true",
+                    }
+                )
+                writer.writerow(
+                    {
+                        "species_column": "Zea_mays",
+                        "experiment_accession": "E-TEST-1",
+                        "file_type": "sample_metadata",
+                        "local_path": str(condensed),
+                        "success": "true",
+                    }
+                )
+
+            jobs = metadata_importer.build_jobs(downloaded_files_tsv=manifest)
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].metadata_tsv.name, "E-TEST-1.condensed-sdrf.tsv")
+        self.assertEqual(jobs[0].metadata_file_kind, "condensed_sdrf")
+
+    def test_wide_records_are_collapsed_by_group_label(self) -> None:
+        """Duplicate group metadata should collapse to one join-safe row."""
+
+        first = {
+            "source_database": "ExpressionAtlas",
+            "experiment_accession": "E-TEST-1",
+            "species_column": "Zea_mays",
+            "sample_or_condition": "g1",
+            "organism_part": "leaf",
+            "treatment": "control",
+        }
+        second = {
+            "source_database": "ExpressionAtlas",
+            "experiment_accession": "E-TEST-1",
+            "species_column": "Zea_mays",
+            "sample_or_condition": "g1",
+            "organism_part": "root",
+            "treatment": "control",
+        }
+
+        merged = metadata_importer.merge_wide_record(first, second)
+
+        self.assertEqual(merged["sample_or_condition"], "g1")
+        self.assertEqual(merged["organism_part"], "leaf; root")
+        self.assertEqual(merged["treatment"], "control")
+
     def test_make_closed_temp_path_is_writable_after_creation(self) -> None:
         """Temporary Parquet paths should not keep leaked descriptors open."""
 
@@ -133,6 +205,7 @@ class ImportSampleMetadataToParquetTests(unittest.TestCase):
 
             self.assertTrue(result.success)
             self.assertEqual(result.metadata_records, 2)
+            self.assertEqual(result.wide_rows, 2)
             self.assertGreater(result.long_rows, 0)
             self.assertEqual(result.mapped_group_records, 2)
 

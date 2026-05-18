@@ -117,6 +117,7 @@ class MetadataJob:
     experiment_accession: str
     species_column: str
     source_database: str = "ExpressionAtlas"
+    metadata_file_kind: str = "sample_metadata"
 
 
 @dataclass(frozen=True)
@@ -126,9 +127,11 @@ class MetadataResult:
     metadata_tsv: Path
     experiment_accession: str
     species_column: str
+    metadata_file_kind: str
     action: str
     success: bool
     metadata_records: int
+    wide_rows: int
     long_rows: int
     mapped_group_records: int
     message: str
@@ -158,6 +161,67 @@ def parse_bool(value: object, default: bool = False) -> bool:
     if text in FALSE_VALUES:
         return False
     return default
+
+
+def metadata_file_kind(path: Path | str) -> str:
+    """Classify an Expression Atlas metadata file by filename.
+
+    Condensed SDRF files are preferred for joining expression matrices because
+    they are more likely to contain Atlas group labels such as ``g1`` and
+    ``g10``. Full SDRF files often contain assay/sample accessions such as
+    ``GSM...`` instead, which are useful raw metadata but usually do not join
+    directly to the expression matrix columns.
+    """
+
+    name = Path(path).name.lower()
+    if "condensed-sdrf" in name and not name.endswith(".bak"):
+        return "condensed_sdrf"
+    if name.endswith(".sdrf.txt") or "sdrf" in name:
+        if name.endswith(".bak"):
+            return "backup_sdrf"
+        return "sdrf"
+    return "sample_metadata"
+
+
+def metadata_file_priority(path: Path | str) -> int:
+    """Return a sort priority for choosing one metadata file per experiment."""
+
+    kind = metadata_file_kind(path)
+    priorities = {
+        "condensed_sdrf": 0,
+        "sdrf": 1,
+        "sample_metadata": 2,
+        "backup_sdrf": 9,
+    }
+    return priorities.get(kind, 5)
+
+
+def merge_metadata_value(existing: str, new_value: str) -> str:
+    """Merge metadata values while preserving unique non-empty terms."""
+
+    existing = str(existing or "").strip()
+    new_value = str(new_value or "").strip()
+    if not existing:
+        return new_value
+    if not new_value:
+        return existing
+    parts = [part.strip() for part in existing.split(";") if part.strip()]
+    if new_value not in parts:
+        parts.append(new_value)
+    return "; ".join(parts)
+
+
+def merge_wide_record(existing: dict[str, object], new_record: dict[str, object]) -> dict[str, object]:
+    """Collapse multiple metadata records for the same Atlas group label."""
+
+    merged = dict(existing)
+    for key, value in new_record.items():
+        if key in {"source_database", "experiment_accession", "species_column", "sample_or_condition", "source_file"}:
+            if not str(merged.get(key, "")).strip() and str(value).strip():
+                merged[key] = value
+            continue
+        merged[key] = merge_metadata_value(str(merged.get(key, "")), str(value))
+    return merged
 
 
 def open_text(path: Path):
@@ -401,16 +465,47 @@ def parquet_row_count(path: Path) -> int:
 
 
 def write_partitioned_metadata(job: MetadataJob, output_dir: Path, force: bool) -> MetadataResult:
-    """Import one metadata file into wide and long Parquet datasets."""
+    """Import one metadata file into wide and long Parquet datasets.
+
+    The long dataset preserves every non-empty metadata field from the selected
+    metadata file. The wide dataset is deliberately join-safe: it includes only
+    records with a non-empty sample/group label and collapses duplicate labels
+    to one row. This prevents many-to-many joins and avoids blank metadata keys
+    such as ``sample_or_condition == ""`` duplicating expression rows.
+    """
 
     if not job.metadata_tsv.exists() or job.metadata_tsv.stat().st_size == 0:
-        return MetadataResult(job.metadata_tsv, job.experiment_accession, job.species_column, "skipped_missing_or_empty_input", False, 0, 0, 0, "metadata file missing or empty")
+        return MetadataResult(
+            job.metadata_tsv,
+            job.experiment_accession,
+            job.species_column,
+            job.metadata_file_kind,
+            "skipped_missing_or_empty_input",
+            False,
+            0,
+            0,
+            0,
+            0,
+            "metadata file missing or empty",
+        )
 
     wide_path = output_dir / "parquet" / "atlas_sample_metadata_wide" / f"species_column={job.species_column}" / f"experiment_accession={job.experiment_accession}" / "sample_metadata.parquet"
     long_path = output_dir / "parquet" / "atlas_sample_metadata_long" / f"species_column={job.species_column}" / f"experiment_accession={job.experiment_accession}" / "sample_metadata.parquet"
 
-    if not force and parquet_row_count(wide_path) > 0 and parquet_row_count(long_path) > 0:
-        return MetadataResult(job.metadata_tsv, job.experiment_accession, job.species_column, "skipped_existing_non_empty_parquet", True, parquet_row_count(wide_path), parquet_row_count(long_path), 0, "existing metadata Parquet contained rows")
+    if not force and parquet_row_count(long_path) > 0:
+        return MetadataResult(
+            job.metadata_tsv,
+            job.experiment_accession,
+            job.species_column,
+            job.metadata_file_kind,
+            "skipped_existing_non_empty_parquet",
+            True,
+            parquet_row_count(wide_path),
+            parquet_row_count(wide_path),
+            parquet_row_count(long_path),
+            0,
+            "existing metadata Parquet contained rows",
+        )
 
     wide_path.parent.mkdir(parents=True, exist_ok=True)
     long_path.parent.mkdir(parents=True, exist_ok=True)
@@ -428,33 +523,45 @@ def write_partitioned_metadata(job: MetadataJob, output_dir: Path, force: bool) 
     metadata_records = 0
     long_rows = 0
     mapped_group_records = 0
+    wide_by_key: dict[str, dict[str, object]] = {}
 
     try:
-        wide_writer = pq.ParquetWriter(wide_temp, wide_schema(), compression="snappy")
         long_writer = pq.ParquetWriter(long_temp, long_schema(), compression="snappy")
-        wide_buffer: list[dict[str, object]] = []
         long_buffer: list[dict[str, object]] = []
 
         for wide, long_records in iter_metadata_rows(job=job):
             metadata_records += 1
-            if str(wide.get("sample_or_condition", "")).strip():
+            sample_key = str(wide.get("sample_or_condition", "")).strip()
+            if sample_key:
                 mapped_group_records += 1
-            wide_buffer.append(wide)
+                if sample_key not in wide_by_key:
+                    wide_by_key[sample_key] = wide
+                else:
+                    wide_by_key[sample_key] = merge_wide_record(
+                        existing=wide_by_key[sample_key],
+                        new_record=wide,
+                    )
             long_buffer.extend(long_records)
 
-            if len(wide_buffer) >= 50000:
-                wide_writer.write_table(rows_to_table(wide_buffer, wide_schema()))
-                wide_buffer = []
             if len(long_buffer) >= 250000:
                 long_writer.write_table(rows_to_table(long_buffer, long_schema()))
                 long_rows += len(long_buffer)
                 long_buffer = []
 
-        if wide_buffer:
-            wide_writer.write_table(rows_to_table(wide_buffer, wide_schema()))
         if long_buffer:
             long_writer.write_table(rows_to_table(long_buffer, long_schema()))
             long_rows += len(long_buffer)
+
+        if long_writer is not None:
+            long_writer.close()
+            long_writer = None
+
+        wide_writer = pq.ParquetWriter(wide_temp, wide_schema(), compression="snappy")
+        wide_records = list(wide_by_key.values())
+        if wide_records:
+            wide_writer.write_table(rows_to_table(wide_records, wide_schema()))
+        wide_writer.close()
+        wide_writer = None
     except Exception as error:  # noqa: BLE001
         for handle in (wide_writer, long_writer):
             if handle is not None:
@@ -462,7 +569,19 @@ def write_partitioned_metadata(job: MetadataJob, output_dir: Path, force: bool) 
         for path in (wide_temp, long_temp):
             if path.exists():
                 path.unlink()
-        return MetadataResult(job.metadata_tsv, job.experiment_accession, job.species_column, "import_failed", False, metadata_records, long_rows, mapped_group_records, str(error))
+        return MetadataResult(
+            job.metadata_tsv,
+            job.experiment_accession,
+            job.species_column,
+            job.metadata_file_kind,
+            "import_failed",
+            False,
+            metadata_records,
+            0,
+            long_rows,
+            mapped_group_records,
+            str(error),
+        )
     finally:
         if wide_writer is not None:
             wide_writer.close()
@@ -473,9 +592,24 @@ def write_partitioned_metadata(job: MetadataJob, output_dir: Path, force: bool) 
     long_temp.replace(long_path)
     wide_rows = parquet_row_count(wide_path)
     long_count = parquet_row_count(long_path)
-    success = wide_rows > 0 and long_count > 0
-    return MetadataResult(job.metadata_tsv, job.experiment_accession, job.species_column, "imported_to_parquet" if success else "imported_empty_parquet", success, wide_rows, long_count, mapped_group_records, "metadata imported" if success else "metadata Parquet had zero rows")
+    success = long_count > 0
+    message = "metadata imported"
+    if wide_rows == 0:
+        message = "metadata imported, but no non-empty sample_or_condition labels were available for joining"
 
+    return MetadataResult(
+        job.metadata_tsv,
+        job.experiment_accession,
+        job.species_column,
+        job.metadata_file_kind,
+        "imported_to_parquet" if success else "imported_empty_parquet",
+        success,
+        metadata_records,
+        wide_rows,
+        long_count,
+        mapped_group_records,
+        message,
+    )
 
 def read_downloaded_manifest(path: Path) -> list[dict[str, str]]:
     """Read the downloaded-files manifest."""
@@ -485,11 +619,18 @@ def read_downloaded_manifest(path: Path) -> list[dict[str, str]]:
 
 
 def build_jobs(downloaded_files_tsv: Path) -> list[MetadataJob]:
-    """Build metadata import jobs from the download manifest."""
+    """Build one preferred metadata import job per species/experiment.
+
+    Expression Atlas often provides both ``*.condensed-sdrf.tsv`` and
+    ``*.sdrf.txt`` for the same experiment. The condensed SDRF is preferred for
+    the joinable wide metadata because it is more likely to contain the Atlas
+    expression group labels used as matrix columns. This prevents later files
+    from overwriting better group-level metadata for the same experiment.
+    """
 
     rows = read_downloaded_manifest(downloaded_files_tsv)
-    jobs: list[MetadataJob] = []
-    seen: set[tuple[str, str, str]] = set()
+    best_rows: dict[tuple[str, str], dict[str, str]] = {}
+    best_priorities: dict[tuple[str, str], tuple[int, str]] = {}
 
     for row in rows:
         if (row.get("file_type") or "").strip() not in METADATA_FILE_TYPES:
@@ -498,18 +639,34 @@ def build_jobs(downloaded_files_tsv: Path) -> list[MetadataJob]:
             continue
         species_column = (row.get("species_column") or "").strip()
         experiment_accession = (row.get("experiment_accession") or "").strip()
+        local_path_text = (row.get("local_path") or "").strip()
+        if not species_column or not experiment_accession or not local_path_text:
+            continue
+
+        priority = metadata_file_priority(local_path_text)
+        file_name = Path(local_path_text).name
+        key = (species_column, experiment_accession)
+        current = best_priorities.get(key)
+        candidate_priority = (priority, file_name)
+        if current is None or candidate_priority < current:
+            best_priorities[key] = candidate_priority
+            best_rows[key] = row
+
+    jobs: list[MetadataJob] = []
+    for (species_column, experiment_accession), row in sorted(best_rows.items()):
         local_path = Path((row.get("local_path") or "").strip())
         source_database = (row.get("source_database") or "ExpressionAtlas").strip()
-        if not species_column or not experiment_accession or not str(local_path):
-            continue
-        key = (species_column, experiment_accession, str(local_path))
-        if key in seen:
-            continue
-        seen.add(key)
-        jobs.append(MetadataJob(local_path, experiment_accession, species_column, source_database))
+        jobs.append(
+            MetadataJob(
+                metadata_tsv=local_path,
+                experiment_accession=experiment_accession,
+                species_column=species_column,
+                source_database=source_database,
+                metadata_file_kind=metadata_file_kind(local_path),
+            )
+        )
 
     return jobs
-
 
 def write_summary(path: Path, results: list[MetadataResult]) -> None:
     """Write the metadata import summary."""
@@ -519,9 +676,11 @@ def write_summary(path: Path, results: list[MetadataResult]) -> None:
         "metadata_tsv",
         "experiment_accession",
         "species_column",
+        "metadata_file_kind",
         "action",
         "success",
         "metadata_records",
+        "wide_rows",
         "long_rows",
         "mapped_group_records",
         "message",
@@ -535,9 +694,11 @@ def write_summary(path: Path, results: list[MetadataResult]) -> None:
                     "metadata_tsv": str(result.metadata_tsv),
                     "experiment_accession": result.experiment_accession,
                     "species_column": result.species_column,
+                    "metadata_file_kind": result.metadata_file_kind,
                     "action": result.action,
                     "success": "true" if result.success else "false",
                     "metadata_records": result.metadata_records,
+                    "wide_rows": result.wide_rows,
                     "long_rows": result.long_rows,
                     "mapped_group_records": result.mapped_group_records,
                     "message": result.message,
