@@ -37,15 +37,6 @@ echo "Project directory: ${PROJECT_DIR}"
 echo "Output directory: ${OUTPUT_DIR}"
 echo "Log file: ${LOG_FILE}"
 
-if command -v conda >/dev/null 2>&1; then
-    CONDA_BASE="$(conda info --base)"
-    # shellcheck source=/dev/null
-    source "${CONDA_BASE}/etc/profile.d/conda.sh"
-    conda activate "${CONDA_ENV}"
-else
-    echo "ERROR: conda was not found on PATH."
-    exit 1
-fi
 
 cd "${REPO_DIR}"
 
