@@ -90,6 +90,7 @@ class ImportSampleMetadataToParquetTests(unittest.TestCase):
 
         self.assertEqual(len(jobs), 1)
         self.assertEqual(jobs[0].experiment_accession, "E-TEST-1")
+        self.assertEqual(jobs[0].expression_tsv.name, "tpms.tsv")
 
 
 
@@ -208,6 +209,65 @@ class ImportSampleMetadataToParquetTests(unittest.TestCase):
             self.assertEqual(result.wide_rows, 2)
             self.assertGreater(result.long_rows, 0)
             self.assertEqual(result.mapped_group_records, 2)
+
+    @unittest.skipIf(metadata_importer.pa is None, "pyarrow is not installed")
+    def test_vertical_condensed_sdrf_infers_expression_groups(self) -> None:
+        """Vertical condensed SDRF metadata should infer g-label groups."""
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            metadata = tmp / "E-TEST-1.condensed-sdrf.tsv"
+            expression = tmp / "E-TEST-1-tpms.tsv"
+            metadata.write_text(
+                "E-TEST-1\t\tSRR1\tcharacteristic\tage\t9 day\n"
+                "E-TEST-1\t\tSRR1\tcharacteristic\tcultivar\tB73\n"
+                "E-TEST-1\t\tSRR1\tcharacteristic\torganism part\tleaf\n"
+                "E-TEST-1\t\tSRR1\tfactor\tsampling site\tleaf section 1\n"
+                "E-TEST-1\t\tSRR2\tcharacteristic\tage\t9 day\n"
+                "E-TEST-1\t\tSRR2\tcharacteristic\tcultivar\tB73\n"
+                "E-TEST-1\t\tSRR2\tcharacteristic\torganism part\tleaf\n"
+                "E-TEST-1\t\tSRR2\tfactor\tsampling site\tleaf section 2\n",
+                encoding="utf-8",
+            )
+            expression.write_text(
+                "GeneID\tGene Name\tg1\tg2\n"
+                "GENE1\tname\t1,2\t3,4\n",
+                encoding="utf-8",
+            )
+            job = metadata_importer.MetadataJob(
+                metadata_tsv=metadata,
+                experiment_accession="E-TEST-1",
+                species_column="Zea_mays",
+                expression_tsv=expression,
+            )
+
+            result = metadata_importer.write_partitioned_metadata(
+                job=job,
+                output_dir=tmp,
+                force=True,
+            )
+
+            self.assertTrue(result.success)
+            self.assertEqual(result.mapped_group_records, 2)
+            wide_path = (
+                tmp
+                / "parquet"
+                / "atlas_sample_metadata_wide"
+                / "species_column=Zea_mays"
+                / "experiment_accession=E-TEST-1"
+                / "sample_metadata.parquet"
+            )
+            table = metadata_importer.pq.read_table(wide_path)
+            records = table.to_pylist()
+            group_records = {
+                row["sample_or_condition"]: row
+                for row in records
+                if row["sample_or_condition"] in {"g1", "g2"}
+            }
+            self.assertEqual(group_records["g1"]["organism_part"], "leaf")
+            self.assertEqual(group_records["g1"]["developmental_stage"], "9 day")
+            self.assertEqual(group_records["g1"]["condition"], "sampling site=leaf section 1")
+            self.assertEqual(group_records["g2"]["condition"], "sampling site=leaf section 2")
 
 
 if __name__ == "__main__":

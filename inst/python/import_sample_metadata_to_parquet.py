@@ -1,21 +1,31 @@
 #!/usr/bin/env python3
 """Import Expression Atlas SDRF/sample metadata into Parquet.
 
-The Expression Atlas expression matrices use compact sample/condition labels
-such as ``g1`` and ``g10``. The accompanying SDRF or condensed-SDRF files hold
-metadata describing those groups or the underlying assays. This script imports
-those metadata files into two Parquet datasets:
+This importer handles two metadata shapes commonly seen in Expression Atlas
+FTP folders:
 
-``atlas_sample_metadata_long``
-    One row per metadata field/value.
+1. Headered SDRF-like tables, where each row already contains columns such as
+   ``Assay Group`` or ``Characteristics[organism part]``.
+2. Condensed SDRF vertical key-value tables, where rows look like::
 
-``atlas_sample_metadata_wide``
-    One row per metadata record with commonly useful fields flattened where
-    possible.
+      E-CURD-27    <blank>    SRR1138410    characteristic    age    9 day
+      E-CURD-27    <blank>    SRR1138410    factor           sampling site  leaf section 1
 
-The importer is deliberately permissive because Atlas metadata differ between
-experiments. It does not require a perfect group mapping; instead it preserves
-all metadata and records any detected group/sample label as ``sample_or_condition``.
+Expression matrices often use compact group labels such as ``g1`` and ``g10``
+rather than assay accessions such as ``SRR1138410``. For vertical condensed
+SDRF files, the importer attempts an explicit, conservative group inference:
+it groups assays by their ``factor`` metadata combinations and maps those
+factor groups onto expression matrix labels (``g1``, ``g2`` ...) when the
+number of factor groups equals the number of expression group columns.
+
+Outputs:
+  atlas_sample_metadata_long
+      One row per metadata field/value. Includes both assay-level metadata and,
+      where inferred, group-level metadata keyed by ``g1``/``g2`` labels.
+
+  atlas_sample_metadata_wide
+      One row per metadata record or inferred expression group with commonly
+      useful fields flattened.
 """
 
 from __future__ import annotations
@@ -27,9 +37,10 @@ import os
 import re
 import sys
 import tempfile
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Iterator, Optional
+from typing import Iterable, Optional
 
 try:
     import pyarrow as pa
@@ -41,6 +52,7 @@ except ImportError:  # pragma: no cover
 TRUE_VALUES = {"true", "t", "yes", "y", "1"}
 FALSE_VALUES = {"false", "f", "no", "n", "0", ""}
 METADATA_FILE_TYPES = {"sample_metadata"}
+EXPRESSION_FILE_TYPES = {"tpms", "fpkms"}
 GROUP_PATTERN = re.compile(r"^g\d+$", flags=re.IGNORECASE)
 
 PREFERRED_FIELDS = {
@@ -60,6 +72,8 @@ PREFERRED_FIELDS = {
         "developmental stage",
         "developmental_stage",
         "factor value[developmental stage]",
+        "age",
+        "characteristics[age]",
     ),
     "genotype": (
         "characteristics[genotype]",
@@ -77,6 +91,7 @@ PREFERRED_FIELDS = {
         "treatment",
         "factor value[treatment]",
         "factor value[compound]",
+        "compound",
     ),
     "condition": (
         "factor value[condition]",
@@ -118,6 +133,7 @@ class MetadataJob:
     species_column: str
     source_database: str = "ExpressionAtlas"
     metadata_file_kind: str = "sample_metadata"
+    expression_tsv: Optional[Path] = None
 
 
 @dataclass(frozen=True)
@@ -164,14 +180,7 @@ def parse_bool(value: object, default: bool = False) -> bool:
 
 
 def metadata_file_kind(path: Path | str) -> str:
-    """Classify an Expression Atlas metadata file by filename.
-
-    Condensed SDRF files are preferred for joining expression matrices because
-    they are more likely to contain Atlas group labels such as ``g1`` and
-    ``g10``. Full SDRF files often contain assay/sample accessions such as
-    ``GSM...`` instead, which are useful raw metadata but usually do not join
-    directly to the expression matrix columns.
-    """
+    """Classify an Expression Atlas metadata file by filename."""
 
     name = Path(path).name.lower()
     if "condensed-sdrf" in name and not name.endswith(".bak"):
@@ -212,11 +221,17 @@ def merge_metadata_value(existing: str, new_value: str) -> str:
 
 
 def merge_wide_record(existing: dict[str, object], new_record: dict[str, object]) -> dict[str, object]:
-    """Collapse multiple metadata records for the same Atlas group label."""
+    """Collapse multiple metadata records for the same join key."""
 
     merged = dict(existing)
     for key, value in new_record.items():
-        if key in {"source_database", "experiment_accession", "species_column", "sample_or_condition", "source_file"}:
+        if key in {
+            "source_database",
+            "experiment_accession",
+            "species_column",
+            "sample_or_condition",
+            "source_file",
+        }:
             if not str(merged.get(key, "")).strip() and str(value).strip():
                 merged[key] = value
             continue
@@ -232,16 +247,8 @@ def open_text(path: Path):
     return path.open(mode="r", encoding="utf-8", newline="")
 
 
-
-
 def make_closed_temp_path(parent_dir: Path, suffix: str) -> Path:
-    """Create a temporary path and immediately close the file descriptor.
-
-    ``tempfile.mkstemp()`` returns an open file descriptor. If that descriptor
-    is not closed, long metadata imports can hit the operating-system open-file
-    limit after hundreds of experiments. This helper keeps the robust unique
-    temporary-path behaviour while avoiding descriptor leaks.
-    """
+    """Create a temporary path and immediately close the file descriptor."""
 
     file_descriptor, temporary_name = tempfile.mkstemp(
         suffix=suffix,
@@ -249,6 +256,7 @@ def make_closed_temp_path(parent_dir: Path, suffix: str) -> Path:
     )
     os.close(file_descriptor)
     return Path(temporary_name)
+
 
 def normalise_header(value: str) -> str:
     """Normalise a metadata header for matching."""
@@ -286,6 +294,15 @@ def is_group_value(value: str) -> bool:
     """Return true when a value looks like an Atlas group label."""
 
     return bool(GROUP_PATTERN.match(value.strip()))
+
+
+def group_label_sort_key(value: str) -> tuple[int, str]:
+    """Sort Atlas group labels by their numeric suffix."""
+
+    match = re.match(r"^g(\d+)$", value.strip(), flags=re.IGNORECASE)
+    if match:
+        return int(match.group(1)), value
+    return sys.maxsize, value
 
 
 def choose_sample_or_condition(row: dict[str, str]) -> str:
@@ -337,28 +354,147 @@ def metadata_category(field_name: str) -> str:
     return "field"
 
 
-def iter_metadata_rows(job: MetadataJob) -> Iterator[tuple[dict[str, object], list[dict[str, object]]]]:
-    """Yield wide and long records from one metadata TSV."""
+def vertical_metadata_category(category: str) -> str:
+    """Normalise vertical condensed-SDRF metadata categories."""
 
-    with open_text(job.metadata_tsv) as handle:
-        reader = csv.reader(handle, delimiter="\t")
-        try:
-            raw_header = next(reader)
-        except StopIteration:
-            return
+    key = normalise_key(category)
+    if key == "characteristic":
+        return "characteristic"
+    if key == "factor":
+        return "factor_value"
+    if key == "comment":
+        return "comment"
+    if key:
+        return key
+    return "field"
 
-        header = make_unique(raw_header)
 
-        for row_index, raw_row in enumerate(reader, start=1):
-            if not raw_row:
-                continue
-            padded = list(raw_row) + [""] * max(0, len(header) - len(raw_row))
-            values = [value.strip() for value in padded[: len(header)]]
-            row = dict(zip(header, values))
-            sample_or_condition = choose_sample_or_condition(row=row)
-            metadata_record_id = f"{job.experiment_accession}:{row_index}"
+def looks_like_vertical_condensed_row(row: list[str], job: MetadataJob) -> bool:
+    """Return true if a row looks like vertical condensed-SDRF metadata."""
 
-            wide = {
+    if len(row) < 6:
+        return False
+    if row[0].strip() != job.experiment_accession:
+        return False
+    category = normalise_key(row[3])
+    return category in {"characteristic", "factor", "comment", "protocol"}
+
+
+def read_expression_group_labels(expression_tsv: Optional[Path]) -> list[str]:
+    """Read expression matrix group columns such as g1/g2 from a TSV header."""
+
+    if expression_tsv is None or not expression_tsv.exists() or expression_tsv.stat().st_size == 0:
+        return []
+
+    with open_text(expression_tsv) as handle:
+        first_line = handle.readline()
+
+    if not first_line:
+        return []
+
+    header = [item.strip().strip('"').strip("'") for item in first_line.rstrip("\n\r").split("\t")]
+    expression_columns = [name for name in header if normalise_key(name) not in {"geneid", "gene id", "gene name", "gene_name", "name"}]
+    group_labels = [name for name in expression_columns if is_group_value(name)]
+
+    if group_labels and len(group_labels) == len(expression_columns):
+        return sorted(group_labels, key=group_label_sort_key)
+
+    return expression_columns
+
+
+def field_values_to_wide_record(
+    *,
+    job: MetadataJob,
+    sample_or_condition: str,
+    metadata_record_id: str,
+    field_values: dict[str, str],
+    source_file: str,
+    condition_value: str = "",
+) -> dict[str, object]:
+    """Build one wide metadata record from normalised field values."""
+
+    def pick(*names: str) -> str:
+        for name in names:
+            value = field_values.get(normalise_key(name), "").strip()
+            if value:
+                return value
+        return ""
+
+    condition = pick("condition")
+    if not condition:
+        condition = condition_value
+
+    return {
+        "source_database": job.source_database,
+        "experiment_accession": job.experiment_accession,
+        "species_column": job.species_column,
+        "sample_or_condition": sample_or_condition,
+        "metadata_record_id": metadata_record_id,
+        "organism": pick("organism"),
+        "organism_part": pick("organism part", "organism_part"),
+        "developmental_stage": pick("developmental stage", "developmental_stage", "age"),
+        "genotype": pick("genotype"),
+        "cultivar": pick("cultivar", "variety"),
+        "treatment": pick("treatment", "compound"),
+        "condition": condition,
+        "assay_name": pick("assay name"),
+        "source_name": pick("source name"),
+        "sample_name": pick("sample name"),
+        "source_file": source_file,
+    }
+
+
+def make_long_record(
+    *,
+    job: MetadataJob,
+    sample_or_condition: str,
+    metadata_record_id: str,
+    metadata_field: str,
+    metadata_category_value: str,
+    metadata_value: str,
+) -> dict[str, object]:
+    """Build one long metadata record."""
+
+    return {
+        "source_database": job.source_database,
+        "experiment_accession": job.experiment_accession,
+        "species_column": job.species_column,
+        "sample_or_condition": sample_or_condition,
+        "metadata_record_id": metadata_record_id,
+        "metadata_field": metadata_field,
+        "metadata_category": metadata_category_value,
+        "metadata_value": metadata_value,
+        "source_file": str(job.metadata_tsv),
+    }
+
+
+def parse_tabular_metadata(
+    job: MetadataJob,
+    header: list[str],
+    rows: Iterable[list[str]],
+) -> tuple[list[dict[str, object]], list[dict[str, object]], int, int]:
+    """Parse headered SDRF-like metadata rows."""
+
+    unique_header = make_unique(header)
+    wide_records: list[dict[str, object]] = []
+    long_records: list[dict[str, object]] = []
+    metadata_records = 0
+    mapped_group_records = 0
+
+    for row_index, raw_row in enumerate(rows, start=1):
+        if not raw_row:
+            continue
+        padded = list(raw_row) + [""] * max(0, len(unique_header) - len(raw_row))
+        values = [value.strip() for value in padded[: len(unique_header)]]
+        row = dict(zip(unique_header, values))
+        sample_or_condition = choose_sample_or_condition(row=row)
+        metadata_record_id = f"{job.experiment_accession}:{row_index}"
+        metadata_records += 1
+        if sample_or_condition:
+            mapped_group_records += 1
+
+        wide_records.append(
+            {
                 "source_database": job.source_database,
                 "experiment_accession": job.experiment_accession,
                 "species_column": job.species_column,
@@ -376,27 +512,219 @@ def iter_metadata_rows(job: MetadataJob) -> Iterator[tuple[dict[str, object], li
                 "sample_name": get_preferred_value(row, "sample_name"),
                 "source_file": str(job.metadata_tsv),
             }
+        )
 
-            long_records: list[dict[str, object]] = []
-            for field_name, value in row.items():
-                value = value.strip()
-                if value == "":
+        for field_name, value in row.items():
+            value = value.strip()
+            if value == "":
+                continue
+            long_records.append(
+                make_long_record(
+                    job=job,
+                    sample_or_condition=sample_or_condition,
+                    metadata_record_id=metadata_record_id,
+                    metadata_field=field_name,
+                    metadata_category_value=metadata_category(field_name),
+                    metadata_value=value,
+                )
+            )
+
+    return wide_records, long_records, metadata_records, mapped_group_records
+
+
+def parse_vertical_condensed_metadata(
+    job: MetadataJob,
+    first_row: list[str],
+    rows: Iterable[list[str]],
+) -> tuple[list[dict[str, object]], list[dict[str, object]], int, int]:
+    """Parse vertical key-value condensed SDRF metadata.
+
+    The returned wide records include assay-level records keyed by SRR/GSM-like
+    accessions and, when possible, inferred group-level records keyed by the
+    expression matrix group labels g1/g2/...
+    """
+
+    all_rows = [first_row]
+    all_rows.extend(list(rows))
+
+    assay_order: list[str] = []
+    assay_seen: set[str] = set()
+    assay_fields: OrderedDict[str, dict[tuple[str, str], str]] = OrderedDict()
+    assay_factors: OrderedDict[str, dict[str, str]] = OrderedDict()
+    long_records: list[dict[str, object]] = []
+    metadata_records = 0
+
+    for row_index, raw_row in enumerate(all_rows, start=1):
+        if len(raw_row) < 6:
+            continue
+        experiment_accession = raw_row[0].strip()
+        assay_id = raw_row[2].strip()
+        category = raw_row[3].strip()
+        field = raw_row[4].strip()
+        value = raw_row[5].strip()
+        if experiment_accession != job.experiment_accession or not assay_id or not field or not value:
+            continue
+
+        metadata_records += 1
+        if assay_id not in assay_seen:
+            assay_seen.add(assay_id)
+            assay_order.append(assay_id)
+            assay_fields[assay_id] = {}
+            assay_factors[assay_id] = {}
+
+        category_norm = vertical_metadata_category(category)
+        field_norm = normalise_key(field)
+        key = (category_norm, field_norm)
+        assay_fields[assay_id][key] = merge_metadata_value(
+            assay_fields[assay_id].get(key, ""),
+            value,
+        )
+        if category_norm == "factor_value":
+            assay_factors[assay_id][field_norm] = merge_metadata_value(
+                assay_factors[assay_id].get(field_norm, ""),
+                value,
+            )
+
+        long_records.append(
+            make_long_record(
+                job=job,
+                sample_or_condition=assay_id,
+                metadata_record_id=f"{job.experiment_accession}:{assay_id}:{row_index}",
+                metadata_field=field,
+                metadata_category_value=category_norm,
+                metadata_value=value,
+            )
+        )
+
+    wide_records: list[dict[str, object]] = []
+    for assay_id in assay_order:
+        field_values: dict[str, str] = {}
+        for (_category, field_norm), value in assay_fields[assay_id].items():
+            field_values[field_norm] = merge_metadata_value(field_values.get(field_norm, ""), value)
+        factor_condition = "; ".join(
+            f"{field}={value}"
+            for field, value in assay_factors[assay_id].items()
+            if value
+        )
+        wide_records.append(
+            field_values_to_wide_record(
+                job=job,
+                sample_or_condition=assay_id,
+                metadata_record_id=f"{job.experiment_accession}:{assay_id}",
+                field_values=field_values,
+                source_file=str(job.metadata_tsv),
+                condition_value=factor_condition,
+            )
+        )
+
+    group_labels = read_expression_group_labels(job.expression_tsv)
+    factor_groups: OrderedDict[tuple[tuple[str, str], ...], list[str]] = OrderedDict()
+    for assay_id in assay_order:
+        factors = assay_factors.get(assay_id, {})
+        if not factors:
+            continue
+        factor_tuple = tuple(sorted((field, value) for field, value in factors.items()))
+        factor_groups.setdefault(factor_tuple, []).append(assay_id)
+
+    mapped_group_records = 0
+    if group_labels and factor_groups and len(group_labels) == len(factor_groups):
+        for group_label, (factor_tuple, assays) in zip(group_labels, factor_groups.items()):
+            group_field_values: dict[str, str] = {}
+            group_factor_values: dict[str, str] = {}
+            for assay_id in assays:
+                for (category_norm, field_norm), value in assay_fields[assay_id].items():
+                    group_field_values[field_norm] = merge_metadata_value(
+                        group_field_values.get(field_norm, ""),
+                        value,
+                    )
+                    if category_norm == "factor_value":
+                        group_factor_values[field_norm] = merge_metadata_value(
+                            group_factor_values.get(field_norm, ""),
+                            value,
+                        )
+            condition_value = "; ".join(
+                f"{field}={value}"
+                for field, value in group_factor_values.items()
+                if value
+            )
+            wide_records.append(
+                field_values_to_wide_record(
+                    job=job,
+                    sample_or_condition=group_label,
+                    metadata_record_id=f"{job.experiment_accession}:{group_label}:inferred_factor_group",
+                    field_values=group_field_values,
+                    source_file=str(job.metadata_tsv),
+                    condition_value=condition_value,
+                )
+            )
+            mapped_group_records += 1
+
+            long_records.append(
+                make_long_record(
+                    job=job,
+                    sample_or_condition=group_label,
+                    metadata_record_id=f"{job.experiment_accession}:{group_label}:inferred_factor_group",
+                    metadata_field="metadata_mapping_method",
+                    metadata_category_value="inferred_group",
+                    metadata_value="factor_group_order_to_expression_g_label",
+                )
+            )
+            for field_norm, value in group_field_values.items():
+                if not value:
                     continue
                 long_records.append(
-                    {
-                        "source_database": job.source_database,
-                        "experiment_accession": job.experiment_accession,
-                        "species_column": job.species_column,
-                        "sample_or_condition": sample_or_condition,
-                        "metadata_record_id": metadata_record_id,
-                        "metadata_field": field_name,
-                        "metadata_category": metadata_category(field_name),
-                        "metadata_value": value,
-                        "source_file": str(job.metadata_tsv),
-                    }
+                    make_long_record(
+                        job=job,
+                        sample_or_condition=group_label,
+                        metadata_record_id=f"{job.experiment_accession}:{group_label}:inferred_factor_group",
+                        metadata_field=field_norm,
+                        metadata_category_value="inferred_group",
+                        metadata_value=value,
+                    )
                 )
+    else:
+        if group_labels:
+            long_records.append(
+                make_long_record(
+                    job=job,
+                    sample_or_condition="",
+                    metadata_record_id=f"{job.experiment_accession}:group_mapping_qc",
+                    metadata_field="metadata_group_mapping_status",
+                    metadata_category_value="qc",
+                    metadata_value=(
+                        f"not_mapped; expression_groups={len(group_labels)}; "
+                        f"factor_groups={len(factor_groups)}"
+                    ),
+                )
+            )
 
-            yield wide, long_records
+    return wide_records, long_records, metadata_records, mapped_group_records
+
+
+def read_metadata_records(job: MetadataJob) -> tuple[list[dict[str, object]], list[dict[str, object]], int, int]:
+    """Read one metadata file into wide and long records."""
+
+    with open_text(job.metadata_tsv) as handle:
+        reader = csv.reader(handle, delimiter="\t")
+        try:
+            first_row = next(reader)
+        except StopIteration:
+            return [], [], 0, 0
+
+        remaining_rows = list(reader)
+
+    if looks_like_vertical_condensed_row(first_row, job):
+        return parse_vertical_condensed_metadata(
+            job=job,
+            first_row=first_row,
+            rows=remaining_rows,
+        )
+
+    return parse_tabular_metadata(
+        job=job,
+        header=first_row,
+        rows=remaining_rows,
+    )
 
 
 def wide_schema() -> pa.Schema:
@@ -465,14 +793,7 @@ def parquet_row_count(path: Path) -> int:
 
 
 def write_partitioned_metadata(job: MetadataJob, output_dir: Path, force: bool) -> MetadataResult:
-    """Import one metadata file into wide and long Parquet datasets.
-
-    The long dataset preserves every non-empty metadata field from the selected
-    metadata file. The wide dataset is deliberately join-safe: it includes only
-    records with a non-empty sample/group label and collapses duplicate labels
-    to one row. This prevents many-to-many joins and avoids blank metadata keys
-    such as ``sample_or_condition == ""`` duplicating expression rows.
-    """
+    """Import one metadata file into wide and long Parquet datasets."""
 
     if not job.metadata_tsv.exists() or job.metadata_tsv.stat().st_size == 0:
         return MetadataResult(
@@ -518,54 +839,36 @@ def write_partitioned_metadata(job: MetadataJob, output_dir: Path, force: bool) 
         suffix=".long.parquet.partial",
     )
 
-    wide_writer: Optional[pq.ParquetWriter] = None
-    long_writer: Optional[pq.ParquetWriter] = None
-    metadata_records = 0
-    long_rows = 0
-    mapped_group_records = 0
-    wide_by_key: dict[str, dict[str, object]] = {}
-
     try:
+        wide_records, long_records, metadata_records, mapped_group_records = read_metadata_records(job=job)
+
+        wide_by_key: dict[str, dict[str, object]] = {}
+        for record in wide_records:
+            sample_key = str(record.get("sample_or_condition", "")).strip()
+            if not sample_key:
+                continue
+            if sample_key not in wide_by_key:
+                wide_by_key[sample_key] = record
+            else:
+                wide_by_key[sample_key] = merge_wide_record(
+                    existing=wide_by_key[sample_key],
+                    new_record=record,
+                )
+
         long_writer = pq.ParquetWriter(long_temp, long_schema(), compression="snappy")
-        long_buffer: list[dict[str, object]] = []
-
-        for wide, long_records in iter_metadata_rows(job=job):
-            metadata_records += 1
-            sample_key = str(wide.get("sample_or_condition", "")).strip()
-            if sample_key:
-                mapped_group_records += 1
-                if sample_key not in wide_by_key:
-                    wide_by_key[sample_key] = wide
-                else:
-                    wide_by_key[sample_key] = merge_wide_record(
-                        existing=wide_by_key[sample_key],
-                        new_record=wide,
-                    )
-            long_buffer.extend(long_records)
-
-            if len(long_buffer) >= 250000:
-                long_writer.write_table(rows_to_table(long_buffer, long_schema()))
-                long_rows += len(long_buffer)
-                long_buffer = []
-
-        if long_buffer:
-            long_writer.write_table(rows_to_table(long_buffer, long_schema()))
-            long_rows += len(long_buffer)
-
-        if long_writer is not None:
-            long_writer.close()
-            long_writer = None
+        for start in range(0, len(long_records), 250000):
+            chunk = long_records[start : start + 250000]
+            if chunk:
+                long_writer.write_table(rows_to_table(chunk, long_schema()))
+        long_writer.close()
 
         wide_writer = pq.ParquetWriter(wide_temp, wide_schema(), compression="snappy")
-        wide_records = list(wide_by_key.values())
-        if wide_records:
-            wide_writer.write_table(rows_to_table(wide_records, wide_schema()))
+        wide_collapsed = list(wide_by_key.values())
+        if wide_collapsed:
+            wide_writer.write_table(rows_to_table(wide_collapsed, wide_schema()))
         wide_writer.close()
-        wide_writer = None
+
     except Exception as error:  # noqa: BLE001
-        for handle in (wide_writer, long_writer):
-            if handle is not None:
-                handle.close()
         for path in (wide_temp, long_temp):
             if path.exists():
                 path.unlink()
@@ -576,17 +879,12 @@ def write_partitioned_metadata(job: MetadataJob, output_dir: Path, force: bool) 
             job.metadata_file_kind,
             "import_failed",
             False,
-            metadata_records,
             0,
-            long_rows,
-            mapped_group_records,
+            0,
+            0,
+            0,
             str(error),
         )
-    finally:
-        if wide_writer is not None:
-            wide_writer.close()
-        if long_writer is not None:
-            long_writer.close()
 
     wide_temp.replace(wide_path)
     long_temp.replace(long_path)
@@ -596,6 +894,8 @@ def write_partitioned_metadata(job: MetadataJob, output_dir: Path, force: bool) 
     message = "metadata imported"
     if wide_rows == 0:
         message = "metadata imported, but no non-empty sample_or_condition labels were available for joining"
+    elif mapped_group_records == 0 and job.expression_tsv is not None:
+        message = "metadata imported, but no expression g-label group mapping was inferred"
 
     return MetadataResult(
         job.metadata_tsv,
@@ -611,6 +911,7 @@ def write_partitioned_metadata(job: MetadataJob, output_dir: Path, force: bool) 
         message,
     )
 
+
 def read_downloaded_manifest(path: Path) -> list[dict[str, str]]:
     """Read the downloaded-files manifest."""
 
@@ -619,33 +920,35 @@ def read_downloaded_manifest(path: Path) -> list[dict[str, str]]:
 
 
 def build_jobs(downloaded_files_tsv: Path) -> list[MetadataJob]:
-    """Build one preferred metadata import job per species/experiment.
-
-    Expression Atlas often provides both ``*.condensed-sdrf.tsv`` and
-    ``*.sdrf.txt`` for the same experiment. The condensed SDRF is preferred for
-    the joinable wide metadata because it is more likely to contain the Atlas
-    expression group labels used as matrix columns. This prevents later files
-    from overwriting better group-level metadata for the same experiment.
-    """
+    """Build one preferred metadata import job per species/experiment."""
 
     rows = read_downloaded_manifest(downloaded_files_tsv)
     best_rows: dict[tuple[str, str], dict[str, str]] = {}
     best_priorities: dict[tuple[str, str], tuple[int, str]] = {}
+    expression_paths: dict[tuple[str, str], Path] = {}
 
     for row in rows:
-        if (row.get("file_type") or "").strip() not in METADATA_FILE_TYPES:
-            continue
         if not parse_bool(row.get("success"), default=False):
             continue
         species_column = (row.get("species_column") or "").strip()
         experiment_accession = (row.get("experiment_accession") or "").strip()
         local_path_text = (row.get("local_path") or "").strip()
+        file_type = (row.get("file_type") or "").strip()
         if not species_column or not experiment_accession or not local_path_text:
+            continue
+        key = (species_column, experiment_accession)
+
+        if file_type in EXPRESSION_FILE_TYPES:
+            existing = expression_paths.get(key)
+            candidate = Path(local_path_text)
+            if existing is None or file_type == "tpms":
+                expression_paths[key] = candidate
+
+        if file_type not in METADATA_FILE_TYPES:
             continue
 
         priority = metadata_file_priority(local_path_text)
         file_name = Path(local_path_text).name
-        key = (species_column, experiment_accession)
         current = best_priorities.get(key)
         candidate_priority = (priority, file_name)
         if current is None or candidate_priority < current:
@@ -656,6 +959,7 @@ def build_jobs(downloaded_files_tsv: Path) -> list[MetadataJob]:
     for (species_column, experiment_accession), row in sorted(best_rows.items()):
         local_path = Path((row.get("local_path") or "").strip())
         source_database = (row.get("source_database") or "ExpressionAtlas").strip()
+        key = (species_column, experiment_accession)
         jobs.append(
             MetadataJob(
                 metadata_tsv=local_path,
@@ -663,10 +967,12 @@ def build_jobs(downloaded_files_tsv: Path) -> list[MetadataJob]:
                 species_column=species_column,
                 source_database=source_database,
                 metadata_file_kind=metadata_file_kind(local_path),
+                expression_tsv=expression_paths.get(key),
             )
         )
 
     return jobs
+
 
 def write_summary(path: Path, results: list[MetadataResult]) -> None:
     """Write the metadata import summary."""
@@ -740,9 +1046,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     write_summary(summary_path, results)
     success = sum(1 for item in results if item.success)
     long_rows = sum(item.long_rows for item in results if item.success)
+    mapped_groups = sum(item.mapped_group_records for item in results if item.success)
     print(f"Wrote sample metadata import summary: {summary_path}", flush=True)
     print(f"Successful metadata imports: {success}/{len(jobs)}", flush=True)
     print(f"Total metadata long rows: {long_rows}", flush=True)
+    print(f"Total inferred expression-group metadata rows: {mapped_groups}", flush=True)
     if len(jobs) > 0 and success == 0:
         return 1
     return 0
