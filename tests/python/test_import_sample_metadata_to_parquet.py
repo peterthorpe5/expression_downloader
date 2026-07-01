@@ -257,7 +257,7 @@ class ImportSampleMetadataToParquetTests(unittest.TestCase):
                 / "experiment_accession=E-TEST-1"
                 / "sample_metadata.parquet"
             )
-            table = metadata_importer.pq.read_table(wide_path)
+            table = metadata_importer.pq.ParquetFile(wide_path).read()
             records = table.to_pylist()
             group_records = {
                 row["sample_or_condition"]: row

@@ -1,7 +1,7 @@
 Package: E3AtlasDuckplyr
 Type: Package
 Title: Duckplyr Expression Atlas Import Utilities for E3 Ligase Resources
-Version: 0.3.6
+Version: 0.3.7
 Authors@R: c(
     person(given = "Pete", family = "Thorpe", role = c("aut", "cre"), email = "p.thorpe@example.org")
     )
@@ -12,11 +12,9 @@ Description: Utilities for building an incremental Expression Atlas import layer
     only missing non-empty files, normalises expression matrices into long
     Parquet datasets using a Python streaming importer by default, imports
     SDRF/condensed-SDRF sample metadata into separate Parquet datasets, and
-    exposes lazy query helpers through duckplyr. Version 0.3.6 improves condensed SDRF parsing by recognising the vertical
-    key-value format used by Expression Atlas, preserving assay-level raw
-    metadata, inferring Atlas g1/g2 expression-group metadata from factor
-    combinations where possible, and producing more reliable joins between
-    expression matrices and sample metadata.
+    exposes lazy query helpers through duckplyr. Version 0.3.7 keeps the v0.3.6 condensed-SDRF group parsing and fixes the
+    pyarrow unit-test path reader so hive-style partition folders do not create
+    duplicate partition columns when a single Parquet file is read directly.
 License: MIT + file LICENSE
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
